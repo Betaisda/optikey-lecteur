@@ -178,7 +178,7 @@ const cellulesLargeur = (d) => cellules(d, d.tuilesX);
 async function demarrer() {
   try {
     pdc = await Pdc.charger('./pdc_wasm.wasm');
-    texte($('etat-decodeur'), 'décodeur prêt · 100 Ko');
+    texte($('etat-decodeur'), 'décodeur prêt');
   } catch (e) {
     texte($('etat-decodeur'), 'décodeur indisponible');
     echouer('Le décodeur n\'a pas pu être chargé', String(e.message || e));
@@ -419,7 +419,31 @@ function afficherMesure(m, ms) {
 
 // --- lecture ---------------------------------------------------------------
 
+/// Empeche une seconde lecture de demarrer pendant la premiere.
+///
+/// Meme avec la camera coupee au bon moment, une pression sur « Lire
+/// maintenant » pendant un decodage relancerait tout. Un verrou vaut mieux
+/// qu'un ordre d'instructions dont il faut se souvenir.
+let lectureEnCours = false;
+
+/// Version de l'application, affichee en permanence dans l'en-tete.
+///
+/// Elle doit rester EGALE au nom de cache du service worker : sans quoi on
+/// afficherait une version tout en servant les fichiers d'une autre.
+/// `tools/deploiement.py` refuse de livrer si les deux divergent.
+const VERSION = 'v7';
+
 async function lire() {
+  if (lectureEnCours) return;
+  lectureEnCours = true;
+  try {
+    await lireVraiment();
+  } finally {
+    lectureEnCours = false;
+  }
+}
+
+async function lireVraiment() {
   const video = $('apercu');
   // Les dimensions sont relevees AVANT toute autre chose, et gardees.
   //
@@ -435,21 +459,27 @@ async function lire() {
   // La lecture travaille TOUJOURS a pleine definition : le guidage peut se
   // permettre d'approximer, le decodage non.
   const gris = versGris(video, largeur, hauteur);
-  // La photo est enregistree AVANT le decodage, pas apres.
+  // UNE TOILE DE COPIE, PRISE MAINTENANT, LUE PLUS TARD.
   //
-  // Une lecture qui echoue ne doit pas emporter l'image avec elle : c'est
-  // justement quand ca rate qu'on veut pouvoir reessayer, ou l'envoyer a
-  // quelqu'un. L'ordre compte donc, et il n'est pas neutre.
-  // LA PRISE DE VUE EST TOUJOURS GARDEE EN MEMOIRE, MEME SANS L'OPTION.
+  // La photo est gardee pour pouvoir etre proposee apres coup — c'est justement
+  // quand la lecture echoue qu'on la veut, pour reessayer ou l'envoyer. Mais sa
+  // conversion en PNG est ASYNCHRONE, et la faire ici, avant d'arreter la
+  // camera, laissait le guidage tourner pendant l'attente : il redeclenchait
+  // `lire`, plusieurs fois, et l'ecran alternait cinq ou six fois entre
+  // « Décodage… » et « Fichier récupéré ».
   //
-  // L'option decide de l'ENREGISTREMENT immediat ; la garder sous la main coute
-  // quelques megaoctets et permet de la proposer apres coup si la lecture
-  // echoue. C'est justement dans ce cas qu'on la veut.
-  dernierePrise = await versPng(video, largeur, hauteur);
+  // On copie donc l'image tout de suite — c'est instantane — et l'on ne
+  // convertit qu'apres avoir coupe la camera.
+  const toile = document.createElement('canvas');
+  toile.width = largeur;
+  toile.height = hauteur;
+  toile.getContext('2d').drawImage(video, 0, 0, largeur, hauteur);
+  arreterCamera();
+
+  dernierePrise = await versPng(toile, largeur, hauteur);
   if ($('opt-garder')?.checked && dernierePrise) {
     telecharger(dernierePrise);
   }
-  arreterCamera();
   await decoder(gris, largeur, hauteur);
 }
 
@@ -931,6 +961,7 @@ if ('serviceWorker' in navigator) {
 
 $('btn-scanner').onclick = ouvrirScanQr;
 $('btn-scan-arreter').onclick = fermerScanQr;
+texte($('version-appli'), VERSION);
 proposerDerniereFeuille();
 // Le scan marche partout : c est notre decodeur, pas celui du navigateur.
 $('actions-scan').hidden = false;

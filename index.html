@@ -362,7 +362,11 @@ canvas.travail { display: none; }
 
 <header>
   <h1>OptiKey</h1>
-  <span class="sous" id="etat-decodeur">chargement…</span>
+  <!-- LA VERSION EST TOUJOURS VISIBLE.
+       Une application installee sert son cache : sans un numero affiche, on ne
+       peut pas savoir si l'on essaie la nouvelle version ou l'ancienne, et
+       toute mesure devient douteuse. -->
+  <span class="sous"><span id="version-appli">—</span> · <span id="etat-decodeur">chargement…</span></span>
 </header>
 
 <!-- INSTALLER : LE SEUL GESTE QUI REND L'APPLICATION HORS LIGNE.
