@@ -389,10 +389,15 @@ canvas.travail { display: none; }
   <!-- 1. amorçage absent ------------------------------------------------- -->
   <section class="vue" id="vue-amorcage">
     <div class="contenu">
-      <h2>Il manque l'amorçage</h2>
-      <p>Cette page a besoin de savoir <strong>comment la feuille est construite</strong> :
-         combien de tuiles, quelle finesse, quelle redondance. Ça ne se devine pas
-         depuis les pixels. C'est le QR Code imprimé sur la feuille qui le porte.</p>
+      <h2>Lire une feuille</h2>
+      <p>Les feuilles récentes <strong>se décrivent elles-mêmes</strong> : chaque tuile
+         porte un en-tête qui dit comment la lire. Rien à scanner avant — cadrez le bloc,
+         et l'application fait le reste.</p>
+      <div class="actions">
+        <button class="principal" id="btn-sans-qr">Lire une feuille</button>
+      </div>
+      <p class="discret">Une feuille plus ancienne que cette version porte sa géométrie
+         dans son QR Code, et non dans ses cellules. Pour celle-là, scannez le QR.</p>
       <!-- REPRENDRE LA DERNIERE FEUILLE.
            Ouverte depuis son icone, l'application n'a aucune geometrie et
            tombait sur cet ecran sans issue. Se souvenir de la derniere lue est
@@ -410,7 +415,7 @@ canvas.travail { display: none; }
       </div>
 
       <div class="encart" data-gravite="info" id="encart-scan-manuel">
-        <span class="titre">Scannez le QR de la feuille</span>
+        <span class="titre">Feuille ancienne : scannez son QR</span>
         <span id="detail-scan-manuel">Avec l'appareil photo du téléphone : il
           ouvrira cette même page, avec la géométrie dans l'adresse.</span>
       </div>

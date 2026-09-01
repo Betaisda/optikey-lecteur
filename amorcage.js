@@ -27,6 +27,7 @@ const BORNES = {
   r:  [0, 16],           // cote d'un repere
   g:  [2, 8],            // niveaux de gris par cellule : 2, 4 ou 8
   c:  [0, 1],            // page en trois canaux de couleur
+  e:  [0, 1],            // la page reserve-t-elle des rangees a son en-tete
 };
 
 /// Plafond dur sur la surface totale en cellules. Une geometrie peut respecter
@@ -87,6 +88,11 @@ export function lireFragment(fragment) {
     // Absent : page monochrome. Toutes les pages ecrites avant la couleur se
     // relisent ainsi, et elles restent valides.
     couleur: (entier(params, 'c', false) ?? 0) !== 0,
+    // Absent : page sans en-tete auto-descriptif. Ce champ ne redit pas
+    // l'en-tete : il dit OU sont les donnees. Une page a en-tete lue sans le
+    // savoir placerait tous ses bits deux rangees trop loin.
+    entete: (entier(params, 'e', false) ?? 0) !== 0,
+    origine: 'qr',
   };
 
   // Seules trois valeurs divisent huit sans reste ET tiennent dans un octet de
@@ -122,7 +128,15 @@ export function lireFragment(fragment) {
   // Sans ce facteur, ce controle rejetterait les deux tiers des pages couleur
   // valides — il comparerait un flux reparti sur trois canaux a la capacite
   // d'un seul.
-  const bits = cellules * d.bitsParCellule * (d.couleur ? 3 : 1);
+  // L'EN-TETE RETIRE DES RANGEES, ET CE CONTROLE DOIT LE SAVOIR.
+  //
+  // Il compare les symboles annonces a la capacite. Compter les rangees
+  // reservees comme si elles portaient des donnees rend le controle plus
+  // permissif — il laisserait passer une page qui deborde. Trente et un octets
+  // occupent autant de rangees qu'il en faut pour les contenir.
+  const rangees = d.entete ? Math.ceil(31 * 8 / d.cellulesParTuile) : 0;
+  const perdues = rangees * d.cellulesParTuile * d.tuilesX * d.tuilesY;
+  const bits = (cellules - perdues) * d.bitsParCellule * (d.couleur ? 3 : 1);
   if (d.symboles * 8 > bits) {
     throw new ErreurAmorcage(
       `incoherent : ${d.symboles} symboles annonces pour ${bits} bits`);
@@ -146,7 +160,8 @@ export function ecrireFragment(d) {
   const c = [`v=2`, `p=${p}`, `tx=${d.tuilesX}`, `ty=${d.tuilesY}`,
              `td=${d.cellulesParTuile}`, `f=${d.cadre}`, `q=${d.silence}`,
              `n=${d.symboles}`, `m=${d.maille ?? 0}`, `r=${d.repere ?? 0}`,
-             `g=${d.niveaux ?? 2}`, `c=${d.couleur ? 1 : 0}`];
+             `g=${d.niveaux ?? 2}`, `c=${d.couleur ? 1 : 0}`,
+             `e=${d.entete ? 1 : 0}`];
   if (d.empreinteCourte) c.push(`h=${d.empreinteCourte}`);
   return c.join('&');
 }

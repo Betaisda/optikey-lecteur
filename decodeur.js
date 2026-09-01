@@ -190,6 +190,32 @@ async function demarrer() {
   amorcer(location.hash || GEOMETRIE_INCLUSE);
 }
 
+/// Entre en mode « la feuille se decrira elle-meme ».
+///
+/// C'EST L'AMORCAGE SANS RIEN.
+/// ---------------------------
+/// Jusqu'ici cette application refusait de commencer sans geometrie, et l'ecran
+/// d'accueil affirmait que celle-ci « ne se devine pas depuis les pixels ».
+/// C'etait vrai : elle voyageait dans le QR. Depuis que chaque page porte son
+/// en-tete, elle se lit dans l'image, et le QR n'est plus qu'une adresse.
+///
+/// `page` reste donc nul, et le guidage cherche l'en-tete au lieu de mesurer
+/// une grille qu'il ne connait pas encore. Des qu'il le trouve, tout le reste
+/// de l'application reprend son cours habituel.
+function amorcerSansQr() {
+  page = null;
+  vise = seuilVise(2);
+  fiche($('fiche-page'), [
+    ['Géométrie', 'lue sur la feuille'],
+    ['Comment', 'chaque tuile porte un en-tête'],
+  ]);
+  texte($('texte-exigence'),
+    'Cette feuille se décrit elle-même : rien à scanner avant. Cadrez le bloc, '
+    + "l'application y lira sa géométrie, puis vous guidera comme d'habitude. "
+    + 'Il faut simplement que les quatre coins de chaque tuile soient dans le champ.');
+  montrer('vue-pret');
+}
+
 function amorcer(fragment) {
   try {
     page = lireFragment(fragment);
@@ -204,6 +230,16 @@ function amorcer(fragment) {
 }
 
 function presenterPage() {
+  decrirePage();
+  montrer('vue-pret');
+}
+
+/// Remplit la fiche et la finesse visee, SANS changer d'ecran.
+///
+/// Separe de `presenterPage` le jour ou le guidage a pu decouvrir la geometrie
+/// en cours de visee : il faut alors mettre la fiche a jour tout en restant
+/// dans le viseur, et non renvoyer l'utilisateur a l'ecran precedent.
+function decrirePage() {
   const large = cellulesLargeur(page);
   vise = seuilVise(page.niveaux ?? 2);
   fiche($('fiche-page'), [
@@ -220,7 +256,6 @@ function presenterPage() {
     + `${vise} px par cellule — la lecture réussit à tous les coups. En dessous elle `
     + `devient une affaire de chance : c'est mesuré, et c'est pour ça que cette page `
     + `affiche la finesse en continu plutôt que de vous laisser deviner.`);
-  montrer('vue-pret');
 }
 
 // --- camera ----------------------------------------------------------------
@@ -260,7 +295,12 @@ async function ouvrirCamera() {
 
   const piste = flux.getVideoTracks()[0];
   const r = piste.getSettings();
-  const plafond = (r.width || 0) / cellulesLargeur(page);
+  // SANS GÉOMÉTRIE, PAS DE PLAFOND À ANNONCER.
+  //
+  // Ce plafond dit combien de pixels par cellule le flux vidéo peut donner au
+  // mieux, bloc plein cadre. Il suppose donc de savoir combien la page a de
+  // cellules — ce qu'on ne saura qu'après avoir lu son en-tête.
+  const plafond = page ? (r.width || 0) / cellulesLargeur(page) : Infinity;
   texte($('etat-decodeur'), `${r.width}×${r.height}`);
 
   if (plafond < vise) {
@@ -361,6 +401,33 @@ function lancerGuidage(video) {
       const t0 = performance.now();
       const k = echelleAnalyse(lv, lh);
       const w = Math.round(lv * k), h = Math.round(lh * k);
+      if (!page) {
+        // CHERCHER L'EN-TETE SE FAIT A PLEINE DEFINITION, ET C'EST OBLIGATOIRE.
+        //
+        // Le guidage, lui, peut reduire l'image : il ne mesure qu'une grille,
+        // et la finesse se remet a l'echelle. Lire l'en-tete demande au
+        // contraire de distinguer des cellules une a une — sur une image
+        // reduite de moitie, il n'y a plus assez de pixels par cellule et
+        // l'amorcage echouerait a chaque tour sans que rien ne le dise.
+        let d = null;
+        try {
+          d = pdc.amorcerImage(versGris(video, lv, lh), lv, lh, 1);
+        } catch { d = null; }
+        dernierTemps = performance.now() - t0;
+        if (d) {
+          // La geometrie est trouvee : la fiche se remplit, on reste dans le
+          // viseur, et le tour suivant repart sur le guidage habituel.
+          page = d;
+          decrirePage();
+          texte($('verdict'), 'Feuille reconnue');
+        } else {
+          $('viseur').dataset.etat = 'perdu';
+          texte($('verdict'), 'Cherche une feuille…');
+        }
+        // Chercher coute plus cher que mesurer : on espace davantage.
+        boucle = setTimeout(tour, Math.max(200, dernierTemps));
+        return;
+      }
       let m = null;
       try {
         m = pdc.inspecter(versGris(video, w, h), w, h, page);
@@ -460,7 +527,7 @@ let lectureEnCours = false;
 /// Elle doit rester EGALE au nom de cache du service worker : sans quoi on
 /// afficherait une version tout en servant les fichiers d'une autre.
 /// `tools/deploiement.py` refuse de livrer si les deux divergent.
-const VERSION = 'v9';
+const VERSION = 'v10';
 
 async function lire() {
   if (lectureEnCours) return;
@@ -492,7 +559,7 @@ async function lireVraiment() {
   // Une page couleur a besoin des trois canaux ; une page monochrome n'a que
   // faire d'un tableau trois fois plus gros, qui coute trois fois la memoire
   // sur un telephone tenu a bout de bras.
-  const brut = page.couleur
+  const brut = (!page || page.couleur)
     ? versRvbBandes(video, largeur, hauteur)
     : versGris(video, largeur, hauteur);
   // UNE TOILE DE COPIE, PRISE MAINTENANT, LUE PLUS TARD.
@@ -581,10 +648,19 @@ async function lireFichier(fichier) {
   try {
     const bitmap = await createImageBitmap(fichier);
     const { width, height } = bitmap;
-    texte($('detail-travail'),
-      `${width} × ${height} px, soit ${(width / cellulesLargeur(page)).toFixed(2)} px par cellule `
-      + 'si le bloc remplit l\'image.');
-    const brut = page.couleur
+    // Sans géométrie, on ne peut pas encore convertir les pixels en cellules :
+    // c'est justement ce que l'en-tête va nous apprendre.
+    texte($('detail-travail'), page
+      ? `${width} × ${height} px, soit ${(width / cellulesLargeur(page)).toFixed(2)} px par cellule `
+        + 'si le bloc remplit l\'image.'
+      : `${width} × ${height} px — la page va se décrire elle-même.`);
+    // SANS GEOMETRIE, ON PREND LES TROIS CANAUX.
+    //
+    // On ignore encore si la page est en couleur — c'est justement l'en-tete
+    // qui le dira. Prendre le gris fermerait la porte aux pages couleur ; les
+    // trois canaux se ramenent a la luminance en une ligne, l'inverse est
+    // impossible.
+    const brut = (!page || page.couleur)
       ? versRvbBandes(bitmap, width, height)
       : versGris(bitmap, width, height);
     bitmap.close?.();
@@ -597,10 +673,37 @@ async function lireFichier(fichier) {
 async function decoder(source, largeur, hauteur) {
   montrer('vue-travail');
   texte($('titre-travail'), 'Décodage…');
+  const troisCanaux = !page || page.couleur;
   texte($('detail-travail'),
-    `${largeur} × ${hauteur} px${page.couleur ? ' · trois canaux' : ''}`);
+    `${largeur} × ${hauteur} px${troisCanaux ? ' · trois canaux' : ''}`);
   // Laisse le navigateur peindre s'il le peut, sans jamais l'attendre.
   await respirer();
+
+  // AUCUNE GEOMETRIE : LA PAGE SE DECRIT, PUIS SE LIT, EN UN SEUL APPEL.
+  //
+  // Le diagnostic habituel a besoin d'une geometrie pour mesurer la finesse ;
+  // ici il n'y en a pas encore. On decode donc directement, et l'on ne parle
+  // de finesse qu'une fois la geometrie connue — ce que le decodage nous
+  // apprend au passage, puisqu'il la retient pour la suite.
+  if (!page) {
+    let sortie;
+    try {
+      sortie = pdc.decoderAuto(source, largeur, hauteur, 3);
+    } catch (e) {
+      echouer('Feuille lue, mais pas décodable', String(e.message || e));
+      return;
+    }
+    if (!sortie) {
+      echouer("Aucune feuille reconnue dans l'image",
+        "La page n'a pas pu se décrire. Il faut que les quatre coins de chaque "
+        + 'tuile soient dans le champ, à plat, sans reflet — et assez de pixels '
+        + 'pour distinguer les cellules une à une. Si la feuille est plus ancienne '
+        + 'que cette version, scannez son QR Code.');
+      return;
+    }
+    presenterResultat(sortie, null);
+    return;
+  }
 
   // LE DIAGNOSTIC TRAVAILLE TOUJOURS SUR LA LUMINANCE.
   //
@@ -1006,6 +1109,7 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+$('btn-sans-qr').onclick = amorcerSansQr;
 $('btn-scanner').onclick = ouvrirScanQr;
 $('btn-scan-arreter').onclick = fermerScanQr;
 texte($('version-appli'), VERSION);
@@ -1036,7 +1140,7 @@ $('btn-garder-echec').onclick = () => {
 reglerBandeauInstallation();
 
 $('btn-recommencer').onclick = () => { bonnesDeSuite = 0; montrer('vue-pret'); };
-$('btn-reessayer').onclick = () => { bonnesDeSuite = 0; montrer(page ? 'vue-pret' : 'vue-amorcage'); };
+$('btn-reessayer').onclick = () => { bonnesDeSuite = 0; montrer('vue-pret'); };
 
 window.addEventListener('hashchange', () => amorcer(location.hash));
 window.addEventListener('pagehide', arreterCamera);

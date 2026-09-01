@@ -21,13 +21,16 @@ Ouvrez le lien ci-dessus, puis **« Ajouter à l'écran d'accueil »** :
 
 Une icône apparaît. **À partir de là, plus rien ne passe par Internet** : ni la page, ni le décodeur, ni vos fichiers. Coupez le Wi-Fi et les données, l'application fonctionne exactement pareil.
 
-C'est une page web ordinaire de 260 ko. Il n'y a ni magasin d'applications, ni compte, ni mise à jour forcée.
+C'est une page web ordinaire de 390 ko. Il n'y a ni magasin d'applications, ni compte, ni mise à jour forcée.
 
 ## S'en servir
 
-1. Scannez le QR Code qui accompagne l'image — il indique au lecteur comment elle est construite.
-2. **Ouvrir la caméra**, cadrez le bloc de données seul, et ne bougez plus : la lecture se déclenche d'elle-même.
-3. Le fichier vous est remis. Vous décidez de l'enregistrer.
+1. **« Lire une feuille »**, puis **Ouvrir la caméra**. Cadrez le bloc de données seul, et ne bougez plus : la lecture se déclenche d'elle-même.
+2. Le fichier vous est remis. Vous décidez de l'enregistrer.
+
+Il n'y a **rien à scanner avant** : chaque image porte, dans ses propres cellules, un en-tête qui dit comment elle est construite. Le lecteur le trouve tout seul, puis vous guide comme d'habitude.
+
+*(Les images produites avant septembre 2026 portaient cette description dans un QR Code. Pour celles-là, le bouton « Scanner le QR de la feuille » est toujours là.)*
 
 L'option **« Enregistrer la photo »** garde la prise de vue dans votre appareil, en PNG sans perte — y compris quand la lecture échoue, pour pouvoir réessayer.
 
@@ -38,7 +41,7 @@ Vous pouvez aussi partir d'une **photo déjà prise**, avec « Choisir une photo
 C'est le point de tout le projet, alors autant être précis :
 
 - **Les octets ne quittent jamais l'appareil.** Le décodage se fait sur place, dans votre navigateur.
-- **La géométrie non plus.** Elle voyage dans le *fragment* de l'adresse — la partie après le `#` — que les navigateurs n'envoient jamais au serveur.
+- **La description de l'image non plus** — elle est *dans l'image*, plus dans l'adresse. Rien à transmettre, donc rien à intercepter. (Pour les images d'avant septembre 2026, elle voyage dans le *fragment* de l'adresse, la partie après le `#`, que les navigateurs n'envoient jamais au serveur.)
 - **Une fois installé, le lecteur ne demande plus rien au réseau.** Vérifiable : coupez tout, il marche.
 
 Le lecteur **n'ouvre ni n'exécute jamais** ce qu'il récupère. Il vous remet des octets bruts ; c'est vous qui décidez de les ouvrir, et avec quoi.
@@ -49,7 +52,7 @@ Un navigateur récent. La caméra en direct exige une adresse en **HTTPS** — c
 
 ## Ce dépôt
 
-Il contient **uniquement le lecteur** : la page, quatre modules JavaScript, le décodeur WebAssembly et trois icônes. Onze fichiers, 260 ko, aucune dépendance — pas une seule bibliothèque tierce, ni ici ni dans le décodeur.
+Il contient **uniquement le lecteur** : la page, quatre modules JavaScript, le décodeur WebAssembly et trois icônes. Onze fichiers, 390 ko, aucune dépendance — pas une seule bibliothèque tierce, ni ici ni dans le décodeur.
 
 Le format, l'encodeur et la recherche vivent ailleurs et ne sont pas publiés.
 

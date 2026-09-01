@@ -14,6 +14,14 @@
 // l'URL du decodeur (paragraphe 7.2 de l'etude).
 
 const PROFILS = { ecran: 0, laser: 1, rugueux: 2 };
+/// La table inverse : du numero de l'ABI vers le nom. Elle sert quand la
+/// geometrie vient de la PAGE et non d'un QR.
+///
+/// Nom different de celui d'`amorcage.js`, qui fait la meme chose pour le QR :
+/// le lecteur autonome concatene les modules, et deux constantes homonymes au
+/// premier niveau s'y ecraseraient. L'outil d'assemblage refuse d'ailleurs de
+/// livrer tant que la collision existe — c'est ainsi qu'elle a ete vue.
+const PROFIL_PAR_NUMERO = ['ecran', 'laser', 'rugueux'];
 
 const ERREURS = {
   '-1': "pointeur nul ou dimensions invalides",
@@ -132,7 +140,7 @@ export class Pdc {
       const res = this.x.pdc_inspect(
         ptr, largeur, hauteur,
         d.tuilesX, d.tuilesY, d.cellulesParTuile, d.cadre, d.silence,
-        d.maille ?? 0, d.repere ?? 0, d.niveaux ?? 2,
+        d.maille ?? 0, d.repere ?? 0, d.niveaux ?? 2, d.entete ? 1 : 0,
       );
       if (this.x.pdc_result_status(res) !== 0) {
         this.x.pdc_result_free(res);
@@ -191,7 +199,7 @@ export class Pdc {
       const res = this.x.pdc_decode_couleur(
         ptr, largeur, hauteur, p,
         d.tuilesX, d.tuilesY, d.cellulesParTuile, d.cadre, d.silence, d.symboles,
-        d.maille ?? 0, d.repere ?? 0, d.niveaux ?? 2,
+        d.maille ?? 0, d.repere ?? 0, d.niveaux ?? 2, d.entete ? 1 : 0,
       );
       const { octets, info, nom } = this.#lire(res);
       return {
@@ -210,6 +218,95 @@ export class Pdc {
     }
   }
 
+  /** RETROUVE LA GEOMETRIE D'UNE PAGE, sans la decoder.
+   *
+   *  Rend un descripteur de la meme forme que `lireFragment`, si bien que tout
+   *  le reste de l'application — guidage, diagnostic, decodage — continue de
+   *  fonctionner sans rien savoir de son origine.
+   *
+   *  Rend `null` quand aucune page ne se decrit : l'etat normal tant que la
+   *  feuille n'est pas dans le champ, donc pas une erreur. */
+  amorcerImage(pixels, largeur, hauteur, canaux = 1) {
+    const ptr = this.x.pdc_alloc(pixels.length);
+    try {
+      this.memoire.set(pixels, ptr);
+      const res = this.x.pdc_amorcer(ptr, largeur, hauteur, canaux);
+      if (this.x.pdc_result_status(res) !== 0) {
+        this.x.pdc_result_free(res);
+        return null;
+      }
+      const { octets, info } = this.#lire(res);
+      const niveaux = info[3];
+      return {
+        profil: PROFIL_PAR_NUMERO[info[4]],
+        tuilesX: info[0],
+        tuilesY: info[1],
+        cellulesParTuile: info[2],
+        niveaux,
+        bitsParCellule: Math.log2(niveaux),
+        symboles: info[5],
+        couleur: info[6] !== 0,
+        cadre: octets[0],
+        silence: octets[1],
+        maille: octets[2],
+        repere: octets[3],
+        // La page porte son en-tete : c'est ainsi qu'on vient de la lire.
+        entete: true,
+        // Elle ne s'est pas annoncee par un QR : rien a comparer.
+        empreinteCourte: null,
+        // D'ou vient cette geometrie. L'interface le dit a l'utilisateur.
+        origine: 'entete',
+      };
+    } finally {
+      this.x.pdc_dealloc(ptr, pixels.length);
+    }
+  }
+
+  /** LIT UNE PAGE SANS RIEN SAVOIR D'ELLE.
+   *
+   *  Ni geometrie, ni profil, ni nombre de symboles : la page les porte dans
+   *  son en-tete. C'est ce qui permet au QR d'amorcage de n'etre plus qu'une
+   *  adresse — la meme pour toutes les pages — au lieu d'une chaine de
+   *  quatorze champs a regenerer pour chaque fichier.
+   *
+   *  `canaux` vaut 1 pour du gris, 3 pour du rouge-vert-bleu entrelace. Une
+   *  page en couleur photographiee en gris echoue franchement plutot que de
+   *  rendre des octets faux : c'est l'en-tete qui dit laquelle des deux elle
+   *  est, et le desaccord est une erreur.
+   *
+   *  Rend `null` si la page ne s'est pas decrite — cas normal quand l'image ne
+   *  contient pas d'OptiKey, ou qu'une tuile manque. */
+  decoderAuto(pixels, largeur, hauteur, canaux = 1) {
+    const ptr = this.x.pdc_alloc(pixels.length);
+    try {
+      this.memoire.set(pixels, ptr);
+      const res = this.x.pdc_decode_auto(ptr, largeur, hauteur, canaux);
+      if (this.x.pdc_result_status(res) !== 0) {
+        const code = this.x.pdc_result_status(res);
+        this.x.pdc_result_free(res);
+        // -8 : aucun en-tete. Les autres codes disent que la page s'est bien
+        // decrite mais n'a pas pu etre lue — une information a garder.
+        if (code === -8) return null;
+        throw new Error(`decodage automatique : code ${code}`);
+      }
+      const { octets, info, nom } = this.#lire(res);
+      return {
+        donnees: octets,
+        nomDeclare: nom,
+        effacements: info[0],
+        blocsLus: info[1],
+        blocsReconstruits: info[2],
+        blocsTotal: info[3],
+        symbolesCorriges: info[4],
+        pireBloc: info[5],
+        budgetParBloc: info[6],
+        niveaux: info[7],
+      };
+    } finally {
+      this.x.pdc_dealloc(ptr, pixels.length);
+    }
+  }
+
   /** Image en niveaux de gris -> fichier. */
   decoder(pixels, largeur, hauteur, d) {
     const p = PROFILS[d.profil];
@@ -221,7 +318,7 @@ export class Pdc {
       const res = this.x.pdc_decode(
         ptr, largeur, hauteur, p,
         d.tuilesX, d.tuilesY, d.cellulesParTuile, d.cadre, d.silence, d.symboles,
-        d.maille ?? 0, d.repere ?? 0, d.niveaux ?? 2,
+        d.maille ?? 0, d.repere ?? 0, d.niveaux ?? 2, d.entete ? 1 : 0,
       );
       const { octets, info, nom } = this.#lire(res);
       return {

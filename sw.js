@@ -22,7 +22,7 @@
 /// « cache d'abord » ci-dessous est justement faite pour ne plus interroger le
 /// reseau. C'est le compromis exact de l'installation hors ligne — on echange
 /// la fraicheur automatique contre l'independance.
-const CACHE = 'optikey-v9';
+const CACHE = 'optikey-v10';
 
 /// Tout ce dont l'application a besoin pour fonctionner sans reseau.
 ///
