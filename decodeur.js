@@ -764,24 +764,16 @@ function proposerDerniereFeuille() {
   $('btn-derniere').onclick = () => amorcer(frag);
 }
 
-/// Le scan du QR depuis l application, quand le navigateur sait le faire.
+/// Le scan du QR, avec NOTRE decodeur.
 ///
-/// `BarcodeDetector` est natif sur Android ; Safari ne l implemente pas. On ne
-/// montre donc le bouton QUE s il existe, plutot que d offrir une commande qui
-/// echouerait. La vraie solution, valable partout, est d ecrire notre propre
-/// decodeur de QR — les pieces sont deja la (GF(256), Reed-Solomon,
-/// homographies, seuillage, composantes connexes) et c est le prochain pas.
-let detecteurQr = null;
+/// La premiere version utilisait `BarcodeDetector`, l API du navigateur. Elle
+/// n existe que sur les moteurs Chromium : aucun iPhone n en dispose, et le
+/// bouton devait donc etre cache sur la moitie des appareils. C etait aussi la
+/// seule chose, dans tout le projet, que nous ne controlions pas.
+///
+/// `pdc.lireQr` est le decodeur du cœur, en WebAssembly : le meme code partout.
 let fluxQr = null;
 let boucleQr = null;
-
-async function scanPossible() {
-  if (!('BarcodeDetector' in window)) return false;
-  try {
-    const f = await window.BarcodeDetector.getSupportedFormats();
-    return f.includes('qr_code');
-  } catch { return false; }
-}
 
 async function ouvrirScanQr() {
   try {
@@ -792,20 +784,20 @@ async function ouvrirScanQr() {
     texte($('erreur-amorcage'), `Caméra indisponible : ${e.message}`);
     return;
   }
-  detecteurQr = detecteurQr || new window.BarcodeDetector({ formats: ['qr_code'] });
   const v = $('apercu-qr');
   v.srcObject = fluxQr;
   await v.play().catch(() => {});
   $('scan-qr').hidden = false;
-  boucleQr = setInterval(async () => {
-    if (!fluxQr) return;
-    try {
-      const codes = await detecteurQr.detect(v);
-      for (const c of codes) {
-        if (appliquerQr(c.rawValue)) return;
-      }
-    } catch { /* une image ratee n est pas une erreur */ }
-  }, 250);
+  boucleQr = setInterval(() => {
+    if (!fluxQr || !v.videoWidth) return;
+    // On lit sur une image reduite : un QR s y trouve tres bien, et le
+    // balayage coute alors quelques millisecondes par image.
+    const l = Math.min(640, v.videoWidth);
+    const h = Math.round((v.videoHeight * l) / v.videoWidth);
+    const octets = pdc.lireQr(versNiveauxDeGris(v, l, h), l, h);
+    if (!octets) return;
+    appliquerQr(new TextDecoder().decode(octets));
+  }, 200);
 }
 
 function fermerScanQr() {
@@ -940,14 +932,11 @@ if ('serviceWorker' in navigator) {
 $('btn-scanner').onclick = ouvrirScanQr;
 $('btn-scan-arreter').onclick = fermerScanQr;
 proposerDerniereFeuille();
-scanPossible().then((oui) => {
-  if (oui) {
-    $('actions-scan').hidden = false;
-    texte($('detail-scan-manuel'),
-      "Ou avec l’appareil photo du téléphone, qui ouvrira cette page "
-      + "avec la géométrie dans l’adresse.");
-  }
-});
+// Le scan marche partout : c est notre decodeur, pas celui du navigateur.
+$('actions-scan').hidden = false;
+texte($('detail-scan-manuel'),
+  "Ou avec l’appareil photo du téléphone, qui ouvrira cette page "
+  + "avec la géométrie dans l’adresse.");
 
 $('btn-installer').onclick = async () => {
   if (!inviteInstallation) return;

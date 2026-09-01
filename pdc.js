@@ -152,6 +152,30 @@ export class Pdc {
     }
   }
 
+  /** Lit un QR Code dans une image en niveaux de gris.
+   *
+   *  Rend les octets, ou `null` si aucun QR exploitable n'est trouve — l'etat
+   *  normal tant que le code n'est pas dans le champ, donc pas une erreur.
+   *
+   *  C'est NOTRE decodeur, pas celui du navigateur : `BarcodeDetector` n'existe
+   *  que sur les moteurs Chromium, et le lecteur ne pouvait donc s'amorcer seul
+   *  que sur la moitie des appareils. */
+  lireQr(pixels, largeur, hauteur) {
+    const ptr = this.x.pdc_alloc(pixels.length);
+    try {
+      this.memoire.set(pixels, ptr);
+      const res = this.x.pdc_lire_qr(ptr, largeur, hauteur);
+      if (this.x.pdc_result_status(res) !== 0) {
+        this.x.pdc_result_free(res);
+        return null;
+      }
+      const { octets } = this.#lire(res);
+      return octets;
+    } finally {
+      this.x.pdc_dealloc(ptr, pixels.length);
+    }
+  }
+
   /** Image en niveaux de gris -> fichier. */
   decoder(pixels, largeur, hauteur, d) {
     const p = PROFILS[d.profil];
