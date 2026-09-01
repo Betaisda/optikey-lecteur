@@ -14,6 +14,24 @@
 // l'URL du decodeur (paragraphe 7.2 de l'etude).
 
 const PROFILS = { ecran: 0, laser: 1, rugueux: 2 };
+
+/// Decode une suite de quadrilateres : par forme, huit entiers de seize bits
+/// petit-boutiens — x et y des quatre coins, en pixels de l'image analysee.
+///
+/// Un seul decodeur pour les deux fonctions qui en rendent, sinon la premiere
+/// divergence d'un octet donnerait un cadre plausible mais faux.
+function quadrilateres(octets, combien) {
+  const vue = new DataView(octets.buffer, octets.byteOffset, octets.byteLength);
+  const out = [];
+  for (let t = 0; t < combien && (t + 1) * 16 <= octets.byteLength; t++) {
+    const q = [];
+    for (let k = 0; k < 4; k++) {
+      q.push([vue.getUint16(t * 16 + k * 4, true), vue.getUint16(t * 16 + k * 4 + 2, true)]);
+    }
+    out.push(q);
+  }
+  return out;
+}
 /// La table inverse : du numero de l'ABI vers le nom. Elle sert quand la
 /// geometrie vient de la PAGE et non d'un QR.
 ///
@@ -146,7 +164,8 @@ export class Pdc {
         this.x.pdc_result_free(res);
         return null;
       }
-      const { info } = this.#lire(res);
+      const { octets, info } = this.#lire(res);
+      const coins = quadrilateres(octets, info[6]);
       return {
         tuiles: info[0],
         tuilesAttendues: info[1],
@@ -154,6 +173,7 @@ export class Pdc {
         contraste: info[3],
         cellulesSures: info[4] / 1000,
         erreurReprojection: info[5] / 1000,
+        coins,
       };
     } finally {
       this.x.pdc_dealloc(ptr, pixels.length);
@@ -215,6 +235,90 @@ export class Pdc {
       };
     } finally {
       this.x.pdc_dealloc(ptr, rvb.length);
+    }
+  }
+
+  /** Demodule une vue SANS la decoder, pour pouvoir en cumuler plusieurs.
+   *
+   *  Une cellule est mal lue quand la grille de pixels tombe mal sur elle.
+   *  Changer de distance change lesquelles : deux vues qui echouent chacune
+   *  peuvent se completer. Mesure au banc : dans toute une bande de
+   *  difficulte, une vue seule echoue six fois sur six pendant que deux vues
+   *  suffisent.
+   *
+   *  Rend un tableau de `2 * symboles` octets — les valeurs, puis un drapeau
+   *  de certitude par case — a passer tel quel a `fusionnerEtDecoder`. */
+  demoduler(pixels, largeur, hauteur, d, canaux = 1) {
+    const ptr = this.x.pdc_alloc(pixels.length);
+    try {
+      this.memoire.set(pixels, ptr);
+      const res = this.x.pdc_demoduler(
+        ptr, largeur, hauteur,
+        d.tuilesX, d.tuilesY, d.cellulesParTuile, d.cadre, d.silence,
+        d.maille ?? 0, d.repere ?? 0, d.niveaux ?? 2, d.entete ? 1 : 0,
+        canaux, d.symboles,
+      );
+      if (this.x.pdc_result_status(res) !== 0) {
+        this.x.pdc_result_free(res);
+        return null;
+      }
+      const { octets, info } = this.#lire(res);
+      return { vue: octets, symboles: info[0], douteux: info[1] };
+    } finally {
+      this.x.pdc_dealloc(ptr, pixels.length);
+    }
+  }
+
+  /** Cumule plusieurs vues de la MEME page et decode le resultat.
+   *
+   *  `vues` est un tableau de ce que rend `demoduler`. Le vote est fait dans
+   *  le cœur — une seule regle, testee la-bas. */
+  fusionnerEtDecoder(vues, symboles, profil) {
+    const p = PROFILS[profil];
+    if (p === undefined) throw new Error(`profil inconnu : ${profil}`);
+    const taille = vues.length * symboles * 2;
+    const ptr = this.x.pdc_alloc(taille);
+    try {
+      for (let i = 0; i < vues.length; i++) {
+        this.memoire.set(vues[i], ptr + i * symboles * 2);
+      }
+      const res = this.x.pdc_fusionner_decoder(ptr, vues.length, symboles, p);
+      const { octets, info, nom } = this.#lire(res);
+      return {
+        donnees: octets,
+        nomDeclare: nom,
+        effacements: info[0],
+        blocsLus: info[1],
+        blocsReconstruits: info[2],
+        blocsTotal: info[3],
+        symbolesCorriges: info[4],
+        pireBloc: info[5],
+        budgetParBloc: info[6],
+        vues: info[7],
+      };
+    } finally {
+      this.x.pdc_dealloc(ptr, taille);
+    }
+  }
+
+  /** Les grandes taches claires carrees de l'image, sans aucune geometrie.
+   *
+   *  Sert au viseur pendant la recherche : montrer ce qu'on voit avant de
+   *  savoir ce que c'est. Rend un tableau de quadrilateres, chacun quatre
+   *  paires de coordonnees en pixels de l'image donnee. */
+  ouvertures(pixels, largeur, hauteur) {
+    const ptr = this.x.pdc_alloc(pixels.length);
+    try {
+      this.memoire.set(pixels, ptr);
+      const res = this.x.pdc_ouvertures(ptr, largeur, hauteur);
+      if (this.x.pdc_result_status(res) !== 0) {
+        this.x.pdc_result_free(res);
+        return [];
+      }
+      const { octets, info } = this.#lire(res);
+      return quadrilateres(octets, info[0]);
+    } finally {
+      this.x.pdc_dealloc(ptr, pixels.length);
     }
   }
 

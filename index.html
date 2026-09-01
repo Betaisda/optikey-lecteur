@@ -210,6 +210,15 @@ button.discret {
   transition: border-color 200ms ease;
 }
 .viseur[data-etat="pret"] .mire { border-color: var(--pret); border-style: solid; }
+/* Le suivi couvre exactement le viseur ; c'est le dessin qui se place, pas
+   l'element. Il ne prend aucun evenement : on cadre, on ne clique pas. */
+#suivi {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
 
 .verdict {
   position: absolute;
@@ -389,82 +398,38 @@ canvas.travail { display: none; }
   <!-- 1. amorçage absent ------------------------------------------------- -->
   <section class="vue" id="vue-amorcage">
     <div class="contenu">
-      <h2>Lire une feuille</h2>
-      <p>Les feuilles récentes <strong>se décrivent elles-mêmes</strong> : chaque tuile
-         porte un en-tête qui dit comment la lire. Rien à scanner avant — cadrez le bloc,
-         et l'application fait le reste.</p>
+      <!-- DEUX CHOIX, ET UN SEUL POUR L'INSTANT.
+           Cet ecran en offrait cinq : lire, scanner un QR, coller une adresse,
+           reprendre la derniere feuille, et un pave de texte pour expliquer la
+           difference. Quatre d'entre eux menaient au meme endroit depuis que la
+           page porte son en-tete — et « reprendre la derniere feuille »
+           reinstallait par-dessus une geometrie perimee, ce qui faussait toutes
+           les lectures suivantes. Ils sont supprimes.
+
+           Un QR de feuille reste utilisable : on le scanne avec l'appareil
+           photo du telephone, qui ouvre cette application avec la geometrie
+           dans l'adresse. Le scanner depuis l'interieur du lecteur etait le
+           seul chemin qui n'avait pas de sens. -->
+      <h2>OptiKey</h2>
+      <p>Un fichier, dans une image. Photographiez-la, elle vous le rend —
+         sans réseau, et sans que rien ne quitte cet appareil.</p>
       <div class="actions">
-        <button class="principal" id="btn-sans-qr">Lire une feuille</button>
+        <button class="principal" id="btn-scanner-document">Scanner un document</button>
       </div>
-      <p class="discret">Une feuille plus ancienne que cette version porte sa géométrie
-         dans son QR Code, et non dans ses cellules. Pour celle-là, scannez le QR.</p>
-      <!-- REPRENDRE LA DERNIERE FEUILLE.
-           Ouverte depuis son icone, l'application n'a aucune geometrie et
-           tombait sur cet ecran sans issue. Se souvenir de la derniere lue est
-           le raccourci le plus utile : on relit presque toujours la meme. -->
-      <div class="encart" data-gravite="info" id="encart-derniere" hidden>
-        <span class="titre">Reprendre la dernière feuille</span>
-        <span id="detail-derniere"></span>
-        <div class="actions" style="margin-top:12px">
-          <button class="principal" id="btn-derniere">Reprendre</button>
-        </div>
-      </div>
-
-      <div class="actions" id="actions-scan" hidden>
-        <button class="principal" id="btn-scanner">Scanner le QR de la feuille</button>
-      </div>
-
-      <div class="encart" data-gravite="info" id="encart-scan-manuel">
-        <span class="titre">Feuille ancienne : scannez son QR</span>
-        <span id="detail-scan-manuel">Avec l'appareil photo du téléphone : il
-          ouvrira cette même page, avec la géométrie dans l'adresse.</span>
-      </div>
-
-      <!-- Viseur du scan de QR, replie tant qu'on ne s'en sert pas. -->
-      <div id="scan-qr" hidden>
-        <div class="viseur" data-etat="perdu">
-          <video id="apercu-qr" playsinline muted autoplay></video>
-          <div class="mire"></div>
-          <div class="verdict" id="verdict-qr">Cadrez le QR Code</div>
-        </div>
-        <div class="actions">
-          <button class="discret" id="btn-scan-arreter">Arrêter</button>
-        </div>
-      </div>
-      <label class="champ">
-        Ou collez ici l'adresse complète lue sur le QR
-        <input type="text" id="champ-url" inputmode="url" spellcheck="false"
-               placeholder="https://…/#v=1&amp;p=1&amp;tx=3…">
-      </label>
-      <div class="actions">
-        <button class="principal" id="btn-amorcer">Utiliser cette adresse</button>
-      </div>
-      <p id="erreur-amorcage" role="alert"></p>
-      <p class="discretion">La géométrie voyage <strong>après le dièse</strong>, dans le
-        fragment de l'adresse. Un fragment n'est jamais transmis au serveur : même
-        les caractéristiques de votre feuille restent sur cet appareil.</p>
     </div>
   </section>
 
   <!-- 2. prêt à viser ----------------------------------------------------- -->
   <section class="vue" id="vue-pret">
     <div class="contenu">
-      <h2>Feuille reconnue</h2>
+      <h2>Scanner un document</h2>
       <dl class="fiche" id="fiche-page"></dl>
-      <div class="encart" data-gravite="info" id="encart-exigence">
-        <span class="titre">Ce que l'image devra porter</span>
-        <span id="texte-exigence"></span>
-      </div>
       <div class="actions">
-        <button class="principal" id="btn-camera">Ouvrir la caméra</button>
-        <button id="btn-photo">Choisir une photo déjà prise</button>
+        <button class="principal" id="btn-camera">Avec la caméra</button>
+        <button id="btn-photo">Depuis une photo déjà prise</button>
         <input type="file" id="entree-fichier" accept="image/*" hidden>
       </div>
-      <p class="discretion">Cadrez <strong>le bloc de données</strong>, pas la feuille
-        entière : sur une A4 le bloc n'occupe qu'un tiers de la largeur, et photographier
-        toute la page gaspille les neuf dixièmes des pixels. L'appareil photo du téléphone
-        donne souvent plus de définition que l'aperçu vidéo — si le cadrage en direct n'y
-        arrive pas, prenez une photo et donnez-la ici.</p>
+      <p class="discretion" id="texte-exigence"></p>
     </div>
   </section>
 
@@ -472,6 +437,11 @@ canvas.travail { display: none; }
   <section class="vue" id="vue-visee">
     <div class="viseur" id="viseur" data-etat="perdu">
       <video id="apercu" playsinline muted autoplay></video>
+      <!-- SUIVI DES TUILES. Ce que le lecteur voit, dessiné par-dessus ce que
+           vous voyez : chaque tuile reconnue est entourée, comme un lecteur de
+           QR Code entoure le code qu'il a trouvé. Sans cela, « Cherche le
+           bloc… » ne dit pas si l'on regarde la feuille ou le reflet à côté. -->
+      <canvas id="suivi"></canvas>
       <div class="mire"></div>
       <div class="verdict" id="verdict">Cadrez le bloc de données</div>
     </div>

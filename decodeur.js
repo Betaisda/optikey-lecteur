@@ -87,6 +87,14 @@ const CONFORT = 5.0;
 /// pessimiste, c'est une mesure fausse, et il vaut mieux dire « je ne vois pas
 /// la feuille » que d'afficher un chiffre qui n'a pas de sens.
 const PX_PLAUSIBLE_MIN = 1.5;
+/// Durée pendant laquelle la netteté doit avoir cessé de progresser avant
+/// qu'on tire. Six cents millisecondes couvrent trois à six passes de guidage,
+/// et l'autofocus d'un téléphone converge en cinq cents à deux mille.
+const REPOS_MS = 600;
+/// Plafond : passé ce délai de bon cadrage, on tire même si la netteté bouge
+/// encore. Attendre indéfiniment un point qui ne se fait pas serait pire que
+/// tenter une lecture imparfaite — le décodeur a de la redondance pour ça.
+const PATIENCE_MS = 2500;
 /// Au-dela, l'analyse du guidage travaille sur une image reduite. Le resultat
 /// est remis a l'echelle : la finesse est proportionnelle a la resolution.
 const PIXELS_ANALYSE_MAX = 2_500_000;
@@ -140,6 +148,25 @@ let flux = null;        // MediaStream
 let boucle = null;      // identifiant de la boucle de guidage
 let derniereMesure = null;
 let bonnesDeSuite = 0;
+/// Meilleure part de cellules sûres vue depuis que le cadrage est bon, et
+/// l'instant où elle a été atteinte. C'est ainsi qu'on sait que l'objectif a
+/// fini de faire son point : la netteté cesse de monter.
+let meilleuresSures = 0;
+let derniereAmelioration = 0;
+let debutBonCadrage = 0;
+/// Facteur de reduction et dimensions de la derniere image analysee. Le suivi
+/// en a besoin pour replacer les coins sur l'apercu.
+let vueCourante = { k: 1, largeur: 0, hauteur: 0 };
+/// Vues demodulees de la page courante, en attente d'etre cumulees.
+///
+/// Nom distinct de `vues`, qui designe les ecrans : deux `vues` au premier
+/// niveau se seraient ecrasees, et le lecteur autonome — qui concatene les
+/// modules — l'aurait fait silencieusement.
+///
+/// Vidée dès qu'on change de page ou qu'on recommence : cumuler des vues de
+/// deux feuilles differentes ne produirait pas une lecture partielle, mais du
+/// bruit presente comme une lecture.
+let vuesPage = [];
 /// Finesse visee pour la page courante. Recalculee des que le descripteur est
 /// connu, car elle depend du nombre de niveaux de gris qu'il annonce.
 let vise = SEUIL;
@@ -204,25 +231,32 @@ async function demarrer() {
 /// de l'application reprend son cours habituel.
 function amorcerSansQr() {
   page = null;
+  vuesPage = [];
   vise = seuilVise(2);
-  fiche($('fiche-page'), [
-    ['Géométrie', 'lue sur la feuille'],
-    ['Comment', 'chaque tuile porte un en-tête'],
-  ]);
+  fiche($('fiche-page'), []);
   texte($('texte-exigence'),
-    'Cette feuille se décrit elle-même : rien à scanner avant. Cadrez le bloc, '
-    + "l'application y lira sa géométrie, puis vous guidera comme d'habitude. "
-    + 'Il faut simplement que les quatre coins de chaque tuile soient dans le champ.');
+    'Cadrez le bloc de données, pas la feuille entière — ses quatre coins dans '
+    + 'le champ, à plat, sans reflet.');
   montrer('vue-pret');
 }
 
+/// Amorce depuis un fragment d'adresse, s'il en porte un d'utilisable.
+///
+/// UNE FEUILLE ANCIENNE PASSE ENCORE PAR ICI.
+/// -------------------------------------------
+/// Celles d'avant l'en-tete portent leur geometrie dans le fragment de
+/// l'adresse. On l'ouvre avec l'appareil photo du telephone, qui lance cette
+/// application avec le fragment : c'est le seul chemin qui reste, et il suffit.
+/// Le scanner de QR embarque, lui, a ete supprime — il faisait doublon avec
+/// l'appareil photo et menait au meme endroit.
+///
+/// Sans fragment exploitable, on ne montre pas d'erreur : la page saura se
+/// decrire elle-meme, et c'est desormais le cas normal.
 function amorcer(fragment) {
   try {
     page = lireFragment(fragment);
-    retenirFeuille(fragment);
   } catch (e) {
     if (!(e instanceof ErreurAmorcage)) throw e;
-    texte($('erreur-amorcage'), fragment && fragment.length > 1 ? e.message : '');
     montrer('vue-amorcage');
     return;
   }
@@ -321,6 +355,10 @@ function arreterCamera() {
   if (boucle) { clearTimeout(boucle); boucle = null; }
   if (flux) { for (const p of flux.getTracks()) p.stop(); flux = null; }
   $('apercu').srcObject = null;
+  // Le suivi doit s'effacer avec l'aperçu : un cadre qui reste dessiné sur un
+  // écran noir affirmerait qu'on voit encore quelque chose.
+  oublierMiseAuPoint();
+  dessinerSuivi([], 1, 0, 0, false);
 }
 
 function avertirViseur(message) {
@@ -409,9 +447,10 @@ function lancerGuidage(video) {
         // contraire de distinguer des cellules une a une — sur une image
         // reduite de moitie, il n'y a plus assez de pixels par cellule et
         // l'amorcage echouerait a chaque tour sans que rien ne le dise.
+        const gris = versGris(video, lv, lh);
         let d = null;
         try {
-          d = pdc.amorcerImage(versGris(video, lv, lh), lv, lh, 1);
+          d = pdc.amorcerImage(gris, lv, lh, 1);
         } catch { d = null; }
         dernierTemps = performance.now() - t0;
         if (d) {
@@ -421,8 +460,20 @@ function lancerGuidage(video) {
           decrirePage();
           texte($('verdict'), 'Feuille reconnue');
         } else {
-          $('viseur').dataset.etat = 'perdu';
-          texte($('verdict'), 'Cherche une feuille…');
+          // MONTRER CE QU'ON VOIT, MEME QUAND ON NE SAIT PAS ENCORE QUOI.
+          //
+          // « Cherche une feuille… » sur un ecran noir ne dit pas si le lecteur
+          // regarde la bonne chose. Les taches carrees qu'il a reperees, elles,
+          // le disent : si elles entourent les tuiles, il ne manque que la
+          // nettete ; si elles entourent autre chose, c'est le cadrage.
+          let taches = [];
+          try { taches = pdc.ouvertures(gris, lv, lh); } catch { taches = []; }
+          dessinerSuivi(taches, 1, lv, lh, false);
+          $('viseur').dataset.etat = taches.length ? 'ajuster' : 'perdu';
+          texte($('verdict'), taches.length
+            ? `${taches.length} tuile${taches.length > 1 ? 's' : ''} en vue — approchez, `
+              + 'que les cellules se distinguent'
+            : 'Cherche une feuille…');
         }
         // Chercher coute plus cher que mesurer : on espace davantage.
         boucle = setTimeout(tour, Math.max(200, dernierTemps));
@@ -434,6 +485,9 @@ function lancerGuidage(video) {
       } catch { m = null; }
       dernierTemps = performance.now() - t0;
       if (m) m.pxParCellule /= k;   // remise a l'echelle de la piste complete
+      // Le suivi est dessine dans les coordonnees de l'image ANALYSEE : il faut
+      // lui donner le facteur de reduction et la taille reelle de la video.
+      vueCourante = { k, largeur: lv, hauteur: lh };
       afficherMesure(m, dernierTemps);
     }
     // La cadence s'adapte au cout reel : on ne cherche pas a saturer le
@@ -443,6 +497,66 @@ function lancerGuidage(video) {
   tour();
 }
 
+/// Dessine les tuiles reconnues par-dessus l'aperçu.
+///
+/// TROIS REPÈRES SUCCESSIFS, ET C'EST LE PIÈGE.
+/// ---------------------------------------------
+/// Les coins arrivent en pixels de l'IMAGE ANALYSÉE, qui est réduite quand la
+/// vidéo est grande. La vidéo, elle, est affichée en `object-fit: contain` :
+/// elle ne remplit donc pas le viseur, elle y est centrée avec des bandes.
+/// Dessiner sans traverser ces deux changements donnerait un cadre plausible
+/// mais décalé — l'erreur la plus difficile à voir, parce qu'elle ressemble à
+/// une détection imprécise plutôt qu'à un bug d'affichage.
+function dessinerSuivi(coins, k, largeurVideo, hauteurVideo, pret) {
+  const toile = $('suivi');
+  const ctx = toile.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const l = toile.clientWidth, h = toile.clientHeight;
+  if (!l || !h) return;
+  if (toile.width !== Math.round(l * dpr) || toile.height !== Math.round(h * dpr)) {
+    toile.width = Math.round(l * dpr);
+    toile.height = Math.round(h * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, l, h);
+  if (!coins || !coins.length || !largeurVideo || !hauteurVideo) return;
+
+  // Rectangle réellement occupé par la vidéo dans le viseur (contain).
+  const e = Math.min(l / largeurVideo, h / hauteurVideo);
+  const dx = (l - largeurVideo * e) / 2;
+  const dy = (h - hauteurVideo * e) / 2;
+  // `k` a réduit l'image avant l'analyse : on annule cette réduction d'abord.
+  const p = (c) => [dx + (c[0] / k) * e, dy + (c[1] / k) * e];
+
+  const teinte = pret
+    ? getComputedStyle(document.documentElement).getPropertyValue('--pret').trim()
+    : getComputedStyle(document.documentElement).getPropertyValue('--ajuster').trim();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = teinte || '#5f5';
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  for (const q of coins) {
+    ctx.beginPath();
+    const [x0, y0] = p(q[0]);
+    ctx.moveTo(x0, y0);
+    for (let i = 1; i < 4; i++) {
+      const [x, y] = p(q[i]);
+      ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+}
+
+/// Oublie où en était la mise au point. À appeler dès que le cadrage se perd :
+/// la netteté d'une image qu'on ne voit plus ne dit plus rien de celle qu'on
+/// verra ensuite.
+function oublierMiseAuPoint() {
+  meilleuresSures = 0;
+  derniereAmelioration = 0;
+  debutBonCadrage = 0;
+}
+
 function afficherMesure(m, ms) {
   const viseur = $('viseur');
   texte($('val-cadence'), ms ? `${(1000 / Math.max(ms, 1)).toFixed(1)}/s` : '—');
@@ -450,6 +564,8 @@ function afficherMesure(m, ms) {
   if (!m) {
     derniereMesure = null;
     bonnesDeSuite = 0;
+    oublierMiseAuPoint();
+    dessinerSuivi([], 1, 0, 0, false);
     viseur.dataset.etat = 'perdu';
     texte($('verdict'), 'Cherche le bloc…');
     texte($('val-finesse'), '—');
@@ -466,6 +582,8 @@ function afficherMesure(m, ms) {
     // qui sort du cadre.
     derniereMesure = null;
     bonnesDeSuite = 0;
+    oublierMiseAuPoint();
+    dessinerSuivi(m.coins, vueCourante.k, vueCourante.largeur, vueCourante.hauteur, false);
     viseur.dataset.etat = 'ajuster';
     texte($('verdict'), 'Cadrez tout le bloc, ses cadres noirs compris');
     texte($('val-finesse'), '—');
@@ -475,6 +593,8 @@ function afficherMesure(m, ms) {
   }
 
   derniereMesure = m;
+  dessinerSuivi(m.coins, vueCourante.k, vueCourante.largeur, vueCourante.hauteur,
+    m.pxParCellule >= vise && m.tuiles === m.tuilesAttendues);
   texte($('val-finesse'), m.pxParCellule.toFixed(2));
   texte($('val-tuiles'), `${m.tuiles}/${m.tuilesAttendues}`);
   texte($('val-contraste'), String(m.contraste));
@@ -487,6 +607,43 @@ function afficherMesure(m, ms) {
 
   const completes = m.tuiles === m.tuilesAttendues;
   if (assez && completes) {
+    // ON ATTEND QUE LA MISE AU POINT AIT FINI, ET C'EST UNE CORRECTION.
+    // ------------------------------------------------------------------
+    // Le declenchement ne regardait que la FINESSE et le nombre de tuiles —
+    // deux grandeurs purement geometriques. Or une image floue a exactement la
+    // meme finesse qu'une image nette : le nombre de pixels par cellule ne
+    // depend que de la distance. Le lecteur tirait donc au bout de deux passes,
+    // soit environ trois dixiemes de seconde, pendant que l'objectif cherchait
+    // encore son point — lequel demande d'une demie a deux secondes.
+    //
+    // La nettete, elle, se lit dans la PART DE CELLULES SURES : une cellule
+    // floue tombe pres de la frontiere de decision et cesse d'etre certaine.
+    // C'est la seule mesure de nettete dont on dispose, et on l'ignorait.
+    //
+    // On n'ajoute AUCUN seuil absolu : on ne saurait pas ou le mettre, et un
+    // seuil trop haut empecherait des lectures qui reussissaient. On attend
+    // seulement que ce chiffre CESSE DE MONTER. Cela ne peut donc que retarder
+    // un tir, jamais l'interdire — et un plafond garantit qu'il part quand meme.
+    const t = performance.now();
+    if (m.cellulesSures > meilleuresSures + 0.004) {
+      meilleuresSures = m.cellulesSures;
+      derniereAmelioration = t;
+    } else if (m.cellulesSures < meilleuresSures - 0.02) {
+      // Nette rechute : on a bouge, ou le point s'est perdu. On repart de la.
+      meilleuresSures = m.cellulesSures;
+      derniereAmelioration = t;
+    }
+    if (!debutBonCadrage) debutBonCadrage = t;
+
+    const repos = t - derniereAmelioration;
+    const attente = t - debutBonCadrage;
+    if (repos < REPOS_MS && attente < PATIENCE_MS) {
+      viseur.dataset.etat = 'ajuster';
+      bonnesDeSuite = 0;
+      texte($('verdict'),
+        `Mise au point… ${(m.cellulesSures * 100).toFixed(0)} % de cellules sûres`);
+      return;
+    }
     viseur.dataset.etat = 'pret';
     texte($('verdict'), 'Ne bougez plus');
     bonnesDeSuite++;
@@ -494,6 +651,7 @@ function afficherMesure(m, ms) {
     // entre deux tremblements.
     if (bonnesDeSuite >= 2) lire();
   } else {
+    oublierMiseAuPoint();
     bonnesDeSuite = 0;
     viseur.dataset.etat = 'ajuster';
     if (completes) {
@@ -527,7 +685,7 @@ let lectureEnCours = false;
 /// Elle doit rester EGALE au nom de cache du service worker : sans quoi on
 /// afficherait une version tout en servant les fichiers d'une autre.
 /// `tools/deploiement.py` refuse de livrer si les deux divergent.
-const VERSION = 'v10';
+const VERSION = 'v11';
 
 async function lire() {
   if (lectureEnCours) return;
@@ -577,13 +735,37 @@ async function lireVraiment() {
   toile.width = largeur;
   toile.height = hauteur;
   toile.getContext('2d').drawImage(video, 0, 0, largeur, hauteur);
-  arreterCamera();
 
-  dernierePrise = await versPng(toile, largeur, hauteur);
-  if ($('opt-garder')?.checked && dernierePrise) {
-    telecharger(dernierePrise);
+  // PLUSIEURS VUES, ET LA CAMERA NE S'ARRETE PLUS AU PREMIER ESSAI.
+  // ---------------------------------------------------------------
+  // Une cellule est mal lue quand la grille de pixels tombe mal sur elle.
+  // Changer de distance change LESQUELLES : deux vues qui échouent chacune
+  // peuvent se compléter. Mesuré au banc `plusieurs_vues` — dans toute une
+  // bande de difficulté, une vue seule échoue six fois sur six pendant que
+  // deux vues suffisent, et trois vont plus loin encore.
+  //
+  // On ne coupe donc la caméra qu'en cas de succès. Tant qu'il en manque, on
+  // demande un léger déplacement et l'on recommence, comme le fait
+  // l'enregistrement d'une empreinte digitale.
+  const suite = await decoder(brut, largeur, hauteur, { garderCamera: true });
+  if (suite === 'reussi') {
+    arreterCamera();
+    dernierePrise = await versPng(toile, largeur, hauteur);
+    if ($('opt-garder')?.checked && dernierePrise) telecharger(dernierePrise);
+    return;
   }
-  await decoder(brut, largeur, hauteur);
+  // Échec : on garde la photo (c'est justement quand ça rate qu'on la veut),
+  // et l'on rend la main au guidage pour une vue de plus.
+  dernierePrise = await versPng(toile, largeur, hauteur);
+  if ($('opt-garder')?.checked && dernierePrise) telecharger(dernierePrise);
+  if (suite === 'encore' && flux) {
+    montrer('vue-visee');
+    oublierMiseAuPoint();
+    bonnesDeSuite = 0;
+    if (!boucle) lancerGuidage(video);
+  } else {
+    arreterCamera();
+  }
 }
 
 /// Enregistre la prise de vue dans l'appareil, en PNG.
@@ -670,7 +852,9 @@ async function lireFichier(fichier) {
   }
 }
 
-async function decoder(source, largeur, hauteur) {
+/// Lit une image. Rend `'reussi'`, `'encore'` (une vue de plus aiderait) ou
+/// `'perdu'` (rien à espérer d'une vue de plus, l'écran d'échec est affiché).
+async function decoder(source, largeur, hauteur, { garderCamera = false } = {}) {
   montrer('vue-travail');
   texte($('titre-travail'), 'Décodage…');
   const troisCanaux = !page || page.couleur;
@@ -679,30 +863,50 @@ async function decoder(source, largeur, hauteur) {
   // Laisse le navigateur peindre s'il le peut, sans jamais l'attendre.
   await respirer();
 
-  // AUCUNE GEOMETRIE : LA PAGE SE DECRIT, PUIS SE LIT, EN UN SEUL APPEL.
+  // AUCUNE GEOMETRIE : ON LA LIT D'ABORD, PUIS ON REPREND LE CHEMIN NORMAL.
   //
-  // Le diagnostic habituel a besoin d'une geometrie pour mesurer la finesse ;
-  // ici il n'y en a pas encore. On decode donc directement, et l'on ne parle
-  // de finesse qu'une fois la geometrie connue — ce que le decodage nous
-  // apprend au passage, puisqu'il la retient pour la suite.
+  // UNE SEULE VOIE DE DECODAGE, ET C'EST UNE CORRECTION.
+  // ----------------------------------------------------
+  // Il y avait ici un appel unique `decoderAuto` qui decrivait ET decodait. Il
+  // marchait, mais il sautait le diagnostic : quand la page se decrivait et que
+  // les donnees ne passaient pas — le cas exact des pages fines photographiees
+  // sur un ecran — l'utilisateur recevait « code -6 » au lieu du nombre de
+  // pixels par cellule et de ce qu'il faut faire.
+  //
+  // Or la geometrie est connue des que l'en-tete est lu. Il n'y a donc aucune
+  // raison de se priver du diagnostic : on lit l'en-tete, on renseigne `page`,
+  // et tout ce qui suit est le chemin deja eprouve.
+  // `source` porte trois canaux tant qu'on ignore si la page est en couleur.
+  // Une fois qu'on le sait, on garde ce qu'il faut, et rien de plus.
+  let pixels = source;
   if (!page) {
-    let sortie;
+    const luminance = luminanceDe(source, largeur, hauteur);
+    let d = null;
     try {
-      sortie = pdc.decoderAuto(source, largeur, hauteur, 3);
-    } catch (e) {
-      echouer('Feuille lue, mais pas décodable', String(e.message || e));
-      return;
-    }
-    if (!sortie) {
+      d = pdc.amorcerImage(luminance, largeur, hauteur, 1);
+    } catch { d = null; }
+    if (!d) {
       echouer("Aucune feuille reconnue dans l'image",
         "La page n'a pas pu se décrire. Il faut que les quatre coins de chaque "
         + 'tuile soient dans le champ, à plat, sans reflet — et assez de pixels '
         + 'pour distinguer les cellules une à une. Si la feuille est plus ancienne '
-        + 'que cette version, scannez son QR Code.');
-      return;
+        + 'que cette version, ouvrez son QR Code avec l’appareil photo du téléphone.');
+      return 'perdu';
     }
-    presenterResultat(sortie, null);
-    return;
+    page = d;
+    // LA PAGE EST MONOCHROME : ON JETTE LES DEUX AUTRES CANAUX MAINTENANT.
+    //
+    // Sans cette ligne, `pdc.decoder` recevrait un tableau trois fois trop long
+    // et lirait un pixel sur trois — soit une image de travers, sans qu'aucune
+    // etape ne s'en apercoive avant l'echec du Reed-Solomon.
+    if (!page.couleur) pixels = luminance;
+    decrirePage();
+    montrer('vue-travail');
+    texte($('titre-travail'), 'Décodage…');
+    texte($('detail-travail'),
+      `${page.tuilesX} × ${page.tuilesY} tuiles, ${page.niveaux} niveaux — `
+      + 'lus dans la page elle-même.');
+    await respirer();
   }
 
   // LE DIAGNOSTIC TRAVAILLE TOUJOURS SUR LA LUMINANCE.
@@ -710,22 +914,49 @@ async function decoder(source, largeur, hauteur) {
   // `inspecter` ne repond qu'a « cette image est-elle exploitable », question
   // qui est geometrique et ne concerne pas les canaux. La detection d'une page
   // couleur se fait d'ailleurs sur la luminance elle aussi.
-  const gris = page.couleur ? luminanceDe(source, largeur, hauteur) : source;
+  const gris = page.couleur ? luminanceDe(pixels, largeur, hauteur) : pixels;
   let mesure = null;
   try {
     mesure = pdc.inspecter(gris, largeur, hauteur, page);
   } catch { /* le diagnostic est un bonus, pas une condition */ }
 
-  let sortie;
-  try {
-    sortie = page.couleur
-      ? pdc.decoderCouleur(source, largeur, hauteur, page)
-      : pdc.decoder(source, largeur, hauteur, page);
-  } catch (e) {
-    diagnostiquer(e, mesure);
-    return;
+  // UNE SEULE VOIE, ET ELLE PASSE TOUJOURS PAR LE CUMUL.
+  //
+  // Avec une seule vue, le cumul rend exactement ce que rendait `pdc.decoder` :
+  // les mêmes symboles, les mêmes effacements. Il n'y a donc pas deux chemins
+  // à maintenir — juste celui-ci, qui sait en plus additionner les vues.
+  const lu = pdc.demoduler(pixels, largeur, hauteur, page, page.couleur ? 3 : 1);
+  if (!lu) {
+    diagnostiquer(new Error('la grille n’a pas été retrouvée'), mesure);
+    return 'perdu';
   }
-  presenterResultat(sortie, mesure);
+  vuesPage.push(lu.vue);
+
+  let sortie = null;
+  try {
+    sortie = pdc.fusionnerEtDecoder(vuesPage, page.symboles, page.profil);
+  } catch { sortie = null; }
+  if (sortie) {
+    presenterResultat(sortie, mesure);
+    return 'reussi';
+  }
+
+  // ÉCHEC. Une vue de plus vaut-elle la peine ?
+  //
+  // Oui tant que la caméra est là et que la page a bien été trouvée : c'est
+  // précisément le régime où le cumul paie. Non pour une photo isolée, où il
+  // n'y aura pas de vue suivante.
+  if (garderCamera && flux) {
+    montrer('vue-visee');
+    texte($('verdict'),
+      `${vuesPage.length} vue${vuesPage.length > 1 ? 's' : ''} prise${vuesPage.length > 1 ? 's' : ''}`
+      + ' — changez un peu de distance, je réessaie');
+    return 'encore';
+  }
+  diagnostiquer(
+    new Error(`${vuesPage.length} vue${vuesPage.length > 1 ? 's' : ''} insuffisante`
+      + `${vuesPage.length > 1 ? 's' : ''}`), mesure);
+  return 'perdu';
 }
 
 /// Distingue « pas assez de pixels » de « image abimee ». Ce sont deux
@@ -907,111 +1138,6 @@ function echouer(titre, detail) {
   montrer('vue-echec');
 }
 
-// --- amorcage depuis l'application elle-meme -------------------------------
-//
-// OUVERTE DEPUIS SON ICONE, L'APPLICATION N'AVAIT AUCUNE ISSUE.
-//
-// Elle affichait « il manque l amorcage » et demandait de scanner un QR — sans
-// offrir le moindre moyen de le faire. Le parcours prevu etait : scanner avec
-// l appareil photo du systeme, qui ouvre l application avec la geometrie dans
-// l adresse. Cela marche sur Android, ou une application installee capte les
-// adresses de son domaine. Sur iOS, l appareil photo ouvre Safari et non
-// l application : le parcours n existait donc pas du tout.
-//
-// Deux issues sont ajoutees ici, et une troisieme reste a construire.
-
-const MEMOIRE_DERNIERE = 'optikey-derniere-feuille';
-
-/// Range la geometrie qui vient d etre lue, pour la reproposer plus tard.
-function retenirFeuille(fragment) {
-  try {
-    localStorage.setItem(MEMOIRE_DERNIERE, fragment.replace(/^#/, ''));
-  } catch { /* stockage refuse : on s en passe, ce n est qu un raccourci */ }
-}
-
-function proposerDerniereFeuille() {
-  let frag = null;
-  try { frag = localStorage.getItem(MEMOIRE_DERNIERE); } catch { /* ignore */ }
-  if (!frag) return;
-  let d;
-  try { d = lireFragment(frag); } catch { return; }
-  const e = $('encart-derniere');
-  if (!e) return;
-  texte($('detail-derniere'),
-    `${d.tuilesX} × ${d.tuilesY} tuiles, ${d.niveaux} niveaux, `
-    + `${d.symboles.toLocaleString('fr')} symboles.`);
-  e.hidden = false;
-  $('btn-derniere').onclick = () => amorcer(frag);
-}
-
-/// Le scan du QR, avec NOTRE decodeur.
-///
-/// La premiere version utilisait `BarcodeDetector`, l API du navigateur. Elle
-/// n existe que sur les moteurs Chromium : aucun iPhone n en dispose, et le
-/// bouton devait donc etre cache sur la moitie des appareils. C etait aussi la
-/// seule chose, dans tout le projet, que nous ne controlions pas.
-///
-/// `pdc.lireQr` est le decodeur du cœur, en WebAssembly : le meme code partout.
-let fluxQr = null;
-let boucleQr = null;
-
-async function ouvrirScanQr() {
-  try {
-    fluxQr = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' } },
-    });
-  } catch (e) {
-    texte($('erreur-amorcage'), `Caméra indisponible : ${e.message}`);
-    return;
-  }
-  const v = $('apercu-qr');
-  v.srcObject = fluxQr;
-  await v.play().catch(() => {});
-  $('scan-qr').hidden = false;
-  boucleQr = setInterval(() => {
-    if (!fluxQr || !v.videoWidth) return;
-    // On lit sur une image reduite : un QR s y trouve tres bien, et le
-    // balayage coute alors quelques millisecondes par image.
-    const l = Math.min(640, v.videoWidth);
-    const h = Math.round((v.videoHeight * l) / v.videoWidth);
-    const octets = pdc.lireQr(versNiveauxDeGris(v, l, h), l, h);
-    if (!octets) return;
-    appliquerQr(new TextDecoder().decode(octets));
-  }, 200);
-}
-
-function fermerScanQr() {
-  if (boucleQr) clearInterval(boucleQr);
-  boucleQr = null;
-  if (fluxQr) fluxQr.getTracks().forEach((t) => t.stop());
-  fluxQr = null;
-  const v = $('apercu-qr');
-  if (v) v.srcObject = null;
-  const z = $('scan-qr');
-  if (z) z.hidden = true;
-}
-
-/// N EXTRAIT QUE LE FRAGMENT, ET JAMAIS L ADRESSE.
-///
-/// Un QR est une entree quelconque : n importe qui peut en imprimer un. Suivre
-/// l adresse qu il contient reviendrait a laisser un bout de papier decider ou
-/// va le navigateur. On ne garde donc que ce qui suit le diese, et `lireFragment`
-/// le valide champ par champ avant qu il ne serve a quoi que ce soit.
-function appliquerQr(valeur) {
-  const i = String(valeur || '').indexOf('#');
-  if (i < 0) return false;
-  const frag = valeur.slice(i + 1);
-  try {
-    lireFragment(frag);
-  } catch {
-    texte($('verdict-qr'), 'QR reconnu, mais ce n’est pas un OptiKey');
-    return false;
-  }
-  fermerScanQr();
-  amorcer(frag);
-  return true;
-}
-
 // --- installation ----------------------------------------------------------
 //
 // DEUX PLATEFORMES, DEUX MECANIQUES, ET UNE SEULE QUI PREVIENT.
@@ -1076,12 +1202,6 @@ window.addEventListener('appinstalled', () => {
 
 // --- branchements ----------------------------------------------------------
 
-$('btn-amorcer').onclick = () => {
-  const brut = $('champ-url').value.trim();
-  const diese = brut.indexOf('#');
-  amorcer(diese >= 0 ? brut.slice(diese) : brut);
-};
-$('champ-url').onkeydown = (e) => { if (e.key === 'Enter') $('btn-amorcer').click(); };
 
 $('btn-camera').onclick = ouvrirCamera;
 $('btn-photo').onclick = () => $('entree-fichier').click();
@@ -1109,16 +1229,8 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-$('btn-sans-qr').onclick = amorcerSansQr;
-$('btn-scanner').onclick = ouvrirScanQr;
-$('btn-scan-arreter').onclick = fermerScanQr;
 texte($('version-appli'), VERSION);
-proposerDerniereFeuille();
-// Le scan marche partout : c est notre decodeur, pas celui du navigateur.
-$('actions-scan').hidden = false;
-texte($('detail-scan-manuel'),
-  "Ou avec l’appareil photo du téléphone, qui ouvrira cette page "
-  + "avec la géométrie dans l’adresse.");
+$('btn-scanner-document').onclick = amorcerSansQr;
 
 $('btn-installer').onclick = async () => {
   if (!inviteInstallation) return;
@@ -1139,8 +1251,8 @@ $('btn-garder-echec').onclick = () => {
 };
 reglerBandeauInstallation();
 
-$('btn-recommencer').onclick = () => { bonnesDeSuite = 0; montrer('vue-pret'); };
-$('btn-reessayer').onclick = () => { bonnesDeSuite = 0; montrer('vue-pret'); };
+$('btn-recommencer').onclick = () => { bonnesDeSuite = 0; vuesPage = []; montrer('vue-pret'); };
+$('btn-reessayer').onclick = () => { bonnesDeSuite = 0; vuesPage = []; montrer('vue-pret'); };
 
 window.addEventListener('hashchange', () => amorcer(location.hash));
 window.addEventListener('pagehide', arreterCamera);
