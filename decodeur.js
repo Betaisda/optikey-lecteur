@@ -742,7 +742,7 @@ let lectureEnCours = false;
 /// Elle doit rester EGALE au nom de cache du service worker : sans quoi on
 /// afficherait une version tout en servant les fichiers d'une autre.
 /// `tools/deploiement.py` refuse de livrer si les deux divergent.
-const VERSION = 'v13';
+const VERSION = 'v14';
 
 async function lire() {
   if (lectureEnCours) return;
