@@ -119,7 +119,13 @@ p strong { color: var(--texte); font-weight: 500; }
   padding: 14px 16px; margin: 0 0 4px;
   background: var(--panneau-haut); border-bottom: 1px solid var(--trait);
 }
-#bandeau-installer[hidden] { display: none; }
+/* L'ATTRIBUT `hidden` DOIT GAGNER, TOUJOURS.
+   Le navigateur lui applique `display: none`, mais avec la specificite la plus
+   faible qui soit : la moindre regle de classe qui pose un `display` la bat.
+   C'est arrive deux fois — un panneau plein ecran qui recouvrait la page en
+   permanence, puis un bouton de scan visible la ou il n'existe pas. Une regle
+   generale vaut mieux qu'une exception par element, qu'on oubliera. */
+[hidden] { display: none !important; }
 #bandeau-installer .texte { flex: 1 1 260px; }
 #bandeau-installer b { display: block; font-weight: 500; }
 #bandeau-installer em { display: block; font-style: normal; color: var(--faible); font-size: 13px; margin-top: 3px; }
@@ -383,9 +389,38 @@ canvas.travail { display: none; }
       <p>Cette page a besoin de savoir <strong>comment la feuille est construite</strong> :
          combien de tuiles, quelle finesse, quelle redondance. Ça ne se devine pas
          depuis les pixels. C'est le QR Code imprimé sur la feuille qui le porte.</p>
-      <div class="encart" data-gravite="info">
+      <!-- REPRENDRE LA DERNIERE FEUILLE.
+           Ouverte depuis son icone, l'application n'a aucune geometrie et
+           tombait sur cet ecran sans issue. Se souvenir de la derniere lue est
+           le raccourci le plus utile : on relit presque toujours la meme. -->
+      <div class="encart" data-gravite="info" id="encart-derniere" hidden>
+        <span class="titre">Reprendre la dernière feuille</span>
+        <span id="detail-derniere"></span>
+        <div class="actions" style="margin-top:12px">
+          <button class="principal" id="btn-derniere">Reprendre</button>
+        </div>
+      </div>
+
+      <div class="actions" id="actions-scan" hidden>
+        <button class="principal" id="btn-scanner">Scanner le QR de la feuille</button>
+      </div>
+
+      <div class="encart" data-gravite="info" id="encart-scan-manuel">
         <span class="titre">Scannez le QR de la feuille</span>
-        <span>Il ouvrira cette même page, avec la géométrie dans l'adresse.</span>
+        <span id="detail-scan-manuel">Avec l'appareil photo du téléphone : il
+          ouvrira cette même page, avec la géométrie dans l'adresse.</span>
+      </div>
+
+      <!-- Viseur du scan de QR, replie tant qu'on ne s'en sert pas. -->
+      <div id="scan-qr" hidden>
+        <div class="viseur" data-etat="perdu">
+          <video id="apercu-qr" playsinline muted autoplay></video>
+          <div class="mire"></div>
+          <div class="verdict" id="verdict-qr">Cadrez le QR Code</div>
+        </div>
+        <div class="actions">
+          <button class="discret" id="btn-scan-arreter">Arrêter</button>
+        </div>
       </div>
       <label class="champ">
         Ou collez ici l'adresse complète lue sur le QR

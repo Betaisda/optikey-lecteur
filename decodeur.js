@@ -193,6 +193,7 @@ async function demarrer() {
 function amorcer(fragment) {
   try {
     page = lireFragment(fragment);
+    retenirFeuille(fragment);
   } catch (e) {
     if (!(e instanceof ErreurAmorcage)) throw e;
     texte($('erreur-amorcage'), fragment && fragment.length > 1 ? e.message : '');
@@ -726,6 +727,119 @@ function echouer(titre, detail) {
   montrer('vue-echec');
 }
 
+// --- amorcage depuis l'application elle-meme -------------------------------
+//
+// OUVERTE DEPUIS SON ICONE, L'APPLICATION N'AVAIT AUCUNE ISSUE.
+//
+// Elle affichait « il manque l amorcage » et demandait de scanner un QR — sans
+// offrir le moindre moyen de le faire. Le parcours prevu etait : scanner avec
+// l appareil photo du systeme, qui ouvre l application avec la geometrie dans
+// l adresse. Cela marche sur Android, ou une application installee capte les
+// adresses de son domaine. Sur iOS, l appareil photo ouvre Safari et non
+// l application : le parcours n existait donc pas du tout.
+//
+// Deux issues sont ajoutees ici, et une troisieme reste a construire.
+
+const MEMOIRE_DERNIERE = 'optikey-derniere-feuille';
+
+/// Range la geometrie qui vient d etre lue, pour la reproposer plus tard.
+function retenirFeuille(fragment) {
+  try {
+    localStorage.setItem(MEMOIRE_DERNIERE, fragment.replace(/^#/, ''));
+  } catch { /* stockage refuse : on s en passe, ce n est qu un raccourci */ }
+}
+
+function proposerDerniereFeuille() {
+  let frag = null;
+  try { frag = localStorage.getItem(MEMOIRE_DERNIERE); } catch { /* ignore */ }
+  if (!frag) return;
+  let d;
+  try { d = lireFragment(frag); } catch { return; }
+  const e = $('encart-derniere');
+  if (!e) return;
+  texte($('detail-derniere'),
+    `${d.tuilesX} × ${d.tuilesY} tuiles, ${d.niveaux} niveaux, `
+    + `${d.symboles.toLocaleString('fr')} symboles.`);
+  e.hidden = false;
+  $('btn-derniere').onclick = () => amorcer(frag);
+}
+
+/// Le scan du QR depuis l application, quand le navigateur sait le faire.
+///
+/// `BarcodeDetector` est natif sur Android ; Safari ne l implemente pas. On ne
+/// montre donc le bouton QUE s il existe, plutot que d offrir une commande qui
+/// echouerait. La vraie solution, valable partout, est d ecrire notre propre
+/// decodeur de QR — les pieces sont deja la (GF(256), Reed-Solomon,
+/// homographies, seuillage, composantes connexes) et c est le prochain pas.
+let detecteurQr = null;
+let fluxQr = null;
+let boucleQr = null;
+
+async function scanPossible() {
+  if (!('BarcodeDetector' in window)) return false;
+  try {
+    const f = await window.BarcodeDetector.getSupportedFormats();
+    return f.includes('qr_code');
+  } catch { return false; }
+}
+
+async function ouvrirScanQr() {
+  try {
+    fluxQr = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } },
+    });
+  } catch (e) {
+    texte($('erreur-amorcage'), `Caméra indisponible : ${e.message}`);
+    return;
+  }
+  detecteurQr = detecteurQr || new window.BarcodeDetector({ formats: ['qr_code'] });
+  const v = $('apercu-qr');
+  v.srcObject = fluxQr;
+  await v.play().catch(() => {});
+  $('scan-qr').hidden = false;
+  boucleQr = setInterval(async () => {
+    if (!fluxQr) return;
+    try {
+      const codes = await detecteurQr.detect(v);
+      for (const c of codes) {
+        if (appliquerQr(c.rawValue)) return;
+      }
+    } catch { /* une image ratee n est pas une erreur */ }
+  }, 250);
+}
+
+function fermerScanQr() {
+  if (boucleQr) clearInterval(boucleQr);
+  boucleQr = null;
+  if (fluxQr) fluxQr.getTracks().forEach((t) => t.stop());
+  fluxQr = null;
+  const v = $('apercu-qr');
+  if (v) v.srcObject = null;
+  const z = $('scan-qr');
+  if (z) z.hidden = true;
+}
+
+/// N EXTRAIT QUE LE FRAGMENT, ET JAMAIS L ADRESSE.
+///
+/// Un QR est une entree quelconque : n importe qui peut en imprimer un. Suivre
+/// l adresse qu il contient reviendrait a laisser un bout de papier decider ou
+/// va le navigateur. On ne garde donc que ce qui suit le diese, et `lireFragment`
+/// le valide champ par champ avant qu il ne serve a quoi que ce soit.
+function appliquerQr(valeur) {
+  const i = String(valeur || '').indexOf('#');
+  if (i < 0) return false;
+  const frag = valeur.slice(i + 1);
+  try {
+    lireFragment(frag);
+  } catch {
+    texte($('verdict-qr'), 'QR reconnu, mais ce n’est pas un OptiKey');
+    return false;
+  }
+  fermerScanQr();
+  amorcer(frag);
+  return true;
+}
+
 // --- installation ----------------------------------------------------------
 //
 // DEUX PLATEFORMES, DEUX MECANIQUES, ET UNE SEULE QUI PREVIENT.
@@ -822,6 +936,18 @@ if ('serviceWorker' in navigator) {
     });
   });
 }
+
+$('btn-scanner').onclick = ouvrirScanQr;
+$('btn-scan-arreter').onclick = fermerScanQr;
+proposerDerniereFeuille();
+scanPossible().then((oui) => {
+  if (oui) {
+    $('actions-scan').hidden = false;
+    texte($('detail-scan-manuel'),
+      "Ou avec l’appareil photo du téléphone, qui ouvrira cette page "
+      + "avec la géométrie dans l’adresse.");
+  }
+});
 
 $('btn-installer').onclick = async () => {
   if (!inviteInstallation) return;
