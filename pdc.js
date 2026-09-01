@@ -176,6 +176,40 @@ export class Pdc {
     }
   }
 
+  /** Image EN COULEUR -> fichier. Trois octets par pixel, entrelaces.
+   *
+   *  Fonction a part plutot que drapeau : l'entree n'a pas la meme forme, et un
+   *  drapeau obligerait chaque appelant a savoir ce que la memoire contient
+   *  sans que rien ne le dise. La premiere confusion produirait une page lue de
+   *  travers plutot qu'une erreur. */
+  decoderCouleur(rvb, largeur, hauteur, d) {
+    const p = PROFILS[d.profil];
+    if (p === undefined) throw new Error(`profil inconnu : ${d.profil}`);
+    const ptr = this.x.pdc_alloc(rvb.length);
+    try {
+      this.memoire.set(rvb, ptr);
+      const res = this.x.pdc_decode_couleur(
+        ptr, largeur, hauteur, p,
+        d.tuilesX, d.tuilesY, d.cellulesParTuile, d.cadre, d.silence, d.symboles,
+        d.maille ?? 0, d.repere ?? 0, d.niveaux ?? 2,
+      );
+      const { octets, info, nom } = this.#lire(res);
+      return {
+        donnees: octets,
+        nomDeclare: nom,
+        effacements: info[0],
+        blocsLus: info[1],
+        blocsReconstruits: info[2],
+        blocsTotal: info[3],
+        symbolesCorriges: info[4],
+        pireBloc: info[5],
+        budgetParBloc: info[6],
+      };
+    } finally {
+      this.x.pdc_dealloc(ptr, rvb.length);
+    }
+  }
+
   /** Image en niveaux de gris -> fichier. */
   decoder(pixels, largeur, hauteur, d) {
     const p = PROFILS[d.profil];
@@ -220,6 +254,21 @@ export function versNiveauxDeGris(imageData) {
   const out = new Uint8Array(width * height);
   for (let i = 0, j = 0; j < out.length; i += 4, j++) {
     out[j] = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
+  }
+  return out;
+}
+
+/** Trois octets par pixel, entrelaces : ce qu'attend le decodeur couleur.
+ *
+ *  Un canvas rend du RVBA ; on laisse tomber la transparence, qui n'existe pas
+ *  sur une photographie. */
+export function versRvb(imageData) {
+  const { data, width, height } = imageData;
+  const out = new Uint8Array(width * height * 3);
+  for (let i = 0, j = 0; j < out.length; i += 4, j += 3) {
+    out[j] = data[i];
+    out[j + 1] = data[i + 1];
+    out[j + 2] = data[i + 2];
   }
   return out;
 }

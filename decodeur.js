@@ -16,7 +16,7 @@
 // se rapproche, ou elle n'y arrive pas. D'ou le parti pris de l'afficher grand
 // et en continu, plutot que de la garder pour le message d'erreur.
 
-import { Pdc, versNiveauxDeGris } from './pdc.js';
+import { Pdc, versNiveauxDeGris, versRvb } from './pdc.js';
 import { lireFragment, ErreurAmorcage } from './amorcage.js';
 import { renifler, verifierAccord, preparer, assainirNom, TAILLE_MAX } from './remise.js';
 
@@ -297,6 +297,35 @@ function avertirViseur(message) {
 /// `ImageData` de 200 Mo d'un seul tenant, ce qu'un telephone refuse ou paie
 /// tres cher ; par bandes de deux millions de pixels, le pic reste modeste et
 /// le resultat est identique.
+/// Luminance d'une image RVB deja extraite, sans repasser par le canvas.
+function luminanceDe(rvb, largeur, hauteur) {
+  const out = new Uint8Array(largeur * hauteur);
+  for (let i = 0, j = 0; j < out.length; i += 3, j++) {
+    out[j] = (rvb[i] * 2 + rvb[i + 1] * 5 + rvb[i + 2]) >> 3;
+  }
+  return out;
+}
+
+/// Trois octets par pixel, par bandes, comme `versGris`.
+///
+/// Le decoupage en bandes n'est pas une elegance : une photo de quarante
+/// megapixels demanderait cent soixante megaoctets d'un coup en RVBA, et le
+/// navigateur d'un telephone refuse bien avant.
+function versRvbBandes(source, largeur, hauteur) {
+  const toile = $('toile');
+  const ctx = toile.getContext('2d', { willReadFrequently: true });
+  toile.width = largeur;
+  toile.height = hauteur;
+  ctx.drawImage(source, 0, 0, largeur, hauteur);
+  const rvb = new Uint8Array(largeur * hauteur * 3);
+  const bande = Math.max(1, Math.floor(2_000_000 / largeur));
+  for (let y = 0; y < hauteur; y += bande) {
+    const h = Math.min(bande, hauteur - y);
+    rvb.set(versRvb(ctx.getImageData(0, y, largeur, h)), y * largeur * 3);
+  }
+  return rvb;
+}
+
 function versGris(source, largeur, hauteur) {
   const toile = $('toile');
   const ctx = toile.getContext('2d', { willReadFrequently: true });
@@ -431,7 +460,7 @@ let lectureEnCours = false;
 /// Elle doit rester EGALE au nom de cache du service worker : sans quoi on
 /// afficherait une version tout en servant les fichiers d'une autre.
 /// `tools/deploiement.py` refuse de livrer si les deux divergent.
-const VERSION = 'v8';
+const VERSION = 'v9';
 
 async function lire() {
   if (lectureEnCours) return;
@@ -458,7 +487,14 @@ async function lireVraiment() {
   if (!largeur || !hauteur) return;
   // La lecture travaille TOUJOURS a pleine definition : le guidage peut se
   // permettre d'approximer, le decodage non.
-  const gris = versGris(video, largeur, hauteur);
+  // ON EXTRAIT CE QUE LA PAGE DEMANDE, PAS PLUS.
+  //
+  // Une page couleur a besoin des trois canaux ; une page monochrome n'a que
+  // faire d'un tableau trois fois plus gros, qui coute trois fois la memoire
+  // sur un telephone tenu a bout de bras.
+  const brut = page.couleur
+    ? versRvbBandes(video, largeur, hauteur)
+    : versGris(video, largeur, hauteur);
   // UNE TOILE DE COPIE, PRISE MAINTENANT, LUE PLUS TARD.
   //
   // La photo est gardee pour pouvoir etre proposee apres coup — c'est justement
@@ -480,7 +516,7 @@ async function lireVraiment() {
   if ($('opt-garder')?.checked && dernierePrise) {
     telecharger(dernierePrise);
   }
-  await decoder(gris, largeur, hauteur);
+  await decoder(brut, largeur, hauteur);
 }
 
 /// Enregistre la prise de vue dans l'appareil, en PNG.
@@ -548,21 +584,30 @@ async function lireFichier(fichier) {
     texte($('detail-travail'),
       `${width} × ${height} px, soit ${(width / cellulesLargeur(page)).toFixed(2)} px par cellule `
       + 'si le bloc remplit l\'image.');
-    const gris = versGris(bitmap, width, height);
+    const brut = page.couleur
+      ? versRvbBandes(bitmap, width, height)
+      : versGris(bitmap, width, height);
     bitmap.close?.();
-    await decoder(gris, width, height);
+    await decoder(brut, width, height);
   } catch (e) {
     echouer('Image illisible', String(e.message || e));
   }
 }
 
-async function decoder(gris, largeur, hauteur) {
+async function decoder(source, largeur, hauteur) {
   montrer('vue-travail');
   texte($('titre-travail'), 'Décodage…');
-  texte($('detail-travail'), `${largeur} × ${hauteur} px`);
+  texte($('detail-travail'),
+    `${largeur} × ${hauteur} px${page.couleur ? ' · trois canaux' : ''}`);
   // Laisse le navigateur peindre s'il le peut, sans jamais l'attendre.
   await respirer();
 
+  // LE DIAGNOSTIC TRAVAILLE TOUJOURS SUR LA LUMINANCE.
+  //
+  // `inspecter` ne repond qu'a « cette image est-elle exploitable », question
+  // qui est geometrique et ne concerne pas les canaux. La detection d'une page
+  // couleur se fait d'ailleurs sur la luminance elle aussi.
+  const gris = page.couleur ? luminanceDe(source, largeur, hauteur) : source;
   let mesure = null;
   try {
     mesure = pdc.inspecter(gris, largeur, hauteur, page);
@@ -570,7 +615,9 @@ async function decoder(gris, largeur, hauteur) {
 
   let sortie;
   try {
-    sortie = pdc.decoder(gris, largeur, hauteur, page);
+    sortie = page.couleur
+      ? pdc.decoderCouleur(source, largeur, hauteur, page)
+      : pdc.decoder(source, largeur, hauteur, page);
   } catch (e) {
     diagnostiquer(e, mesure);
     return;
