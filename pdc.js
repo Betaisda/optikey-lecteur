@@ -174,6 +174,9 @@ export class Pdc {
         cellulesSures: info[4] / 1000,
         erreurReprojection: info[5] / 1000,
         coins,
+        // Plus petit ecart entre deux teintes voisines. Sur une page a deux
+        // teintes il vaut le contraste ; au-dela, c'est LUI qui decide.
+        ecartTeintes: info[7] / 100,
       };
     } finally {
       this.x.pdc_dealloc(ptr, pixels.length);

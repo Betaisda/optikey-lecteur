@@ -95,6 +95,16 @@ const REPOS_MS = 600;
 /// encore. Attendre indéfiniment un point qui ne se fait pas serait pire que
 /// tenter une lecture imparfaite — le décodeur a de la redondance pour ça.
 const PATIENCE_MS = 2500;
+/// Nombre de vues cumulées au-delà duquel on s'arrête pour expliquer.
+///
+/// SANS PLAFOND, L'ÉCHEC N'EST JAMAIS EXPLIQUÉ.
+/// ---------------------------------------------
+/// La caméra qui reprend indéfiniment paraît travailler, mais si la page est
+/// hors de portée elle ne dira jamais pourquoi — et c'est justement le moment
+/// où l'on a besoin du chiffre : combien de pixels par cellule, combien de
+/// cellules sûres. Le banc montre que deux ou trois vues suffisent quand elles
+/// peuvent suffire ; au-delà de quatre, une de plus n'apporte plus rien.
+const VUES_MAX = 4;
 /// Au-dela, l'analyse du guidage travaille sur une image reduite. Le resultat
 /// est remis a l'echelle : la finesse est proportionnelle a la resolution.
 const PIXELS_ANALYSE_MAX = 2_500_000;
@@ -448,10 +458,21 @@ function lancerGuidage(video) {
         // reduite de moitie, il n'y a plus assez de pixels par cellule et
         // l'amorcage echouerait a chaque tour sans que rien ne le dise.
         const gris = versGris(video, lv, lh);
+        // ON REGARDE AVANT DE CHERCHER, ET C'EST DIX FOIS MOINS CHER.
+        //
+        // Trouver l'en-tete demande une detection complete par cote de tuile
+        // essaye — deux a trois dixiemes de seconde sur un telephone. Reperer
+        // les taches claires carrees, lui, coute quinze millisecondes. Quand il
+        // n'y en a aucune, il n'y a rien a chercher : la boucle reste vive au
+        // lieu de saccader sur une scene vide.
+        let taches = [];
+        try { taches = pdc.ouvertures(gris, lv, lh); } catch { taches = []; }
         let d = null;
-        try {
-          d = pdc.amorcerImage(gris, lv, lh, 1);
-        } catch { d = null; }
+        if (taches.length) {
+          try {
+            d = pdc.amorcerImage(gris, lv, lh, 1);
+          } catch { d = null; }
+        }
         dernierTemps = performance.now() - t0;
         if (d) {
           // La geometrie est trouvee : la fiche se remplit, on reste dans le
@@ -466,8 +487,6 @@ function lancerGuidage(video) {
           // regarde la bonne chose. Les taches carrees qu'il a reperees, elles,
           // le disent : si elles entourent les tuiles, il ne manque que la
           // nettete ; si elles entourent autre chose, c'est le cadrage.
-          let taches = [];
-          try { taches = pdc.ouvertures(gris, lv, lh); } catch { taches = []; }
           dessinerSuivi(taches, 1, lv, lh, false);
           $('viseur').dataset.etat = taches.length ? 'ajuster' : 'perdu';
           texte($('verdict'), taches.length
@@ -685,7 +704,7 @@ let lectureEnCours = false;
 /// Elle doit rester EGALE au nom de cache du service worker : sans quoi on
 /// afficherait une version tout en servant les fichiers d'une autre.
 /// `tools/deploiement.py` refuse de livrer si les deux divergent.
-const VERSION = 'v11';
+const VERSION = 'v12';
 
 async function lire() {
   if (lectureEnCours) return;
@@ -946,16 +965,17 @@ async function decoder(source, largeur, hauteur, { garderCamera = false } = {}) 
   // Oui tant que la caméra est là et que la page a bien été trouvée : c'est
   // précisément le régime où le cumul paie. Non pour une photo isolée, où il
   // n'y aura pas de vue suivante.
-  if (garderCamera && flux) {
+  if (garderCamera && flux && vuesPage.length < VUES_MAX) {
     montrer('vue-visee');
     texte($('verdict'),
-      `${vuesPage.length} vue${vuesPage.length > 1 ? 's' : ''} prise${vuesPage.length > 1 ? 's' : ''}`
+      `${vuesPage.length} vue${vuesPage.length > 1 ? 's' : ''} sur ${VUES_MAX}`
       + ' — changez un peu de distance, je réessaie');
     return 'encore';
   }
+  const k = vuesPage.length;
   diagnostiquer(
-    new Error(`${vuesPage.length} vue${vuesPage.length > 1 ? 's' : ''} insuffisante`
-      + `${vuesPage.length > 1 ? 's' : ''}`), mesure);
+    new Error(`${k} vue${k > 1 ? 's' : ''} cumulée${k > 1 ? 's' : ''}, `
+      + `${sortie === null ? 'toujours' : ''} insuffisante${k > 1 ? 's' : ''}`), mesure);
   return 'perdu';
 }
 
@@ -995,6 +1015,21 @@ function diagnostiquer(e, mesure) {
   // finesse mesuree est bonne. D'ou un message qui envoyait chercher un pli
   // inexistant.
   const sures = (mesure.cellulesSures * 100).toFixed(0);
+  // L'ÉCART ENTRE TEINTES, ET POURQUOI IL EST ICI.
+  //
+  // Sur une page à quatre teintes, les deux gris du milieu peuvent s'être
+  // rejoints alors que le contraste reste excellent et la finesse largement
+  // suffisante. Aucun chiffre affiché ne bougeait, et le message envoyait
+  // chercher un pli inexistant. Celui-ci discrimine : au-dessous d'une
+  // vingtaine, la décision n'a plus de marge, et c'est la chaîne optique —
+  // courbe de tonalité du téléphone, accentuation, moiré — pas le cadrage.
+  const ecart = mesure.ecartTeintes ?? 0;
+  const teintes = page && page.niveaux > 2
+    ? [`Écart entre teintes voisines : ${ecart.toFixed(0)} niveaux de gris sur 255 `
+       + `(${page.niveaux} teintes à séparer). En dessous d'une vingtaine, la `
+       + `décision n'a plus de marge — et c'est l'écran ou l'appareil qui les a `
+       + `rapprochées, pas votre cadrage.`]
+    : [];
   // Apostrophes typographiques et guillemets doubles : aucune sequence
   // d'echappement dans un texte qui en contient a chaque ligne.
   const paragraphes = [
@@ -1008,6 +1043,7 @@ function diagnostiquer(e, mesure) {
       + "pixels partout — et cela ne se voit pas à l’œil.",
     "SI VOUS PHOTOGRAPHIEZ DU PAPIER — le bloc est probablement plié, abîmé, "
       + "ou masqué par un reflet.",
+    ...teintes,
     `— ${e.message}`,
   ];
   echouer("Données irrécupérables", paragraphes.join("\n\n"));
