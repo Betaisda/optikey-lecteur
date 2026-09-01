@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OptiKey — lecteur optique</title>
+<!-- APPLICATION INSTALLABLE.
+     Le manifeste rend la page ajoutable a l'ecran d'accueil, sur Android comme
+     sur iOS. Une fois installee, elle s'execute dans un contexte securise : la
+     camera y fonctionne, ce qu'un fichier ouvert en `file://` ne permet pas. -->
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="theme-color" content="#0A0E0C">
+<!-- iOS ignore une partie du manifeste et lit encore ces trois-la. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="OptiKey">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="./icone-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  /* Palette d'instrument : fond presque noir a peine vert, comme un
+     phosphore, et trois signaux qui ne se confondent pas au premier coup
+     d'œil — c'est une interface qu'on lit du coin de l'œil en visant. */
+  --fond: #0A0E0C;
+  --panneau: #141A17;
+  --panneau-haut: #1B2320;
+  --trait: #27332D;
+  --texte: #E4EAE6;
+  --faible: #7E8C85;
+  --pret: #46D39A;
+  --ajuster: #F2A93B;
+  --refus: #F2645A;
+  --pas: 4px;
+  --sans: 'IBM Plex Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--fond);
+  color: var(--texte);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+/* --- bandeau ------------------------------------------------------------ */
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--trait);
+  background: var(--panneau);
+}
+header h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+header .sous {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--faible);
+  margin-left: auto;
+  text-align: right;
+}
+
+main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.vue { display: none; flex: 1; flex-direction: column; min-height: 0; }
+.vue[data-actif] { display: flex; }
+
+.contenu {
+  padding: 22px 18px 28px;
+  max-width: 62ch;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+h2 { margin: 0; font-size: 20px; font-weight: 600; text-wrap: balance; }
+p  { margin: 0; color: var(--faible); }
+p strong { color: var(--texte); font-weight: 500; }
+
+/* --- boutons ------------------------------------------------------------ */
+
+.actions { display: flex; flex-direction: column; gap: 10px; }
+
+/* Une option a cocher, lisible d'un coup d'œil pendant qu'on vise. */
+.option {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 12px 14px; margin-bottom: 12px;
+  border: 1px solid var(--trait); border-radius: 10px;
+  background: var(--panneau-haut); cursor: pointer;
+}
+.option input { margin-top: 2px; width: 18px; height: 18px; accent-color: var(--pret); flex: none; }
+.option b { display: block; font-weight: 500; }
+.option em { display: block; font-style: normal; color: var(--faible); font-size: 13px; margin-top: 3px; }
+
+button, .bouton {
+  font: inherit;
+  font-weight: 500;
+  padding: 14px 18px;
+  border-radius: 10px;
+  border: 1px solid var(--trait);
+  background: var(--panneau-haut);
+  color: var(--texte);
+  cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+  display: block;
+  width: 100%;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+button:hover, .bouton:hover { background: #232D28; }
+button:focus-visible, .bouton:focus-visible,
+input:focus-visible { outline: 2px solid var(--pret); outline-offset: 2px; }
+button.principal, .bouton.principal {
+  background: var(--pret);
+  border-color: var(--pret);
+  color: #06110C;
+  font-weight: 600;
+}
+button.principal:hover, .bouton.principal:hover { background: #5FE0AB; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button.discret {
+  background: none;
+  border-color: transparent;
+  color: var(--faible);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  padding: 8px;
+}
+
+/* --- viseur ------------------------------------------------------------- */
+
+.viseur {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #000;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.viseur video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+/* Cadre de visee : le BLOC doit remplir le champ, pas la feuille. Sur une
+   A4 le bloc n'occupe qu'un tiers de la largeur ; viser la page entiere
+   gaspille les neuf dixiemes des pixels du capteur. */
+.mire {
+  position: absolute;
+  inset: 6%;
+  border: 2px dashed color-mix(in srgb, var(--ajuster) 55%, transparent);
+  border-radius: 6px;
+  pointer-events: none;
+  transition: border-color 200ms ease;
+}
+.viseur[data-etat="pret"] .mire { border-color: var(--pret); border-style: solid; }
+
+.verdict {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  padding: 30px 18px 16px;
+  background: linear-gradient(to top, rgba(6,10,8,0.96) 40%, rgba(6,10,8,0));
+  font-size: 17px;
+  font-weight: 600;
+  text-align: center;
+  text-wrap: balance;
+  pointer-events: none;
+}
+.viseur[data-etat="ajuster"] .verdict { color: var(--ajuster); }
+.viseur[data-etat="pret"]    .verdict { color: var(--pret); }
+.viseur[data-etat="perdu"]   .verdict { color: var(--faible); }
+
+/* --- afficheur de mesures ----------------------------------------------- */
+
+.mesures {
+  border-top: 1px solid var(--trait);
+  background: var(--panneau);
+  padding: 12px 18px 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.jauge { display: grid; gap: 6px; }
+.jauge .haut {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faible);
+}
+.jauge .valeur {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--texte);
+}
+.piste {
+  position: relative;
+  height: 8px;
+  border-radius: 4px;
+  background: #0B120E;
+  overflow: hidden;
+  border: 1px solid var(--trait);
+}
+.piste .remplissage {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: var(--ajuster);
+  transition: width 140ms linear, background 200ms ease;
+}
+.piste .seuil {
+  position: absolute;
+  top: -3px; bottom: -3px;
+  width: 2px;
+  background: var(--texte);
+  opacity: 0.75;
+}
+.jauge[data-suffisant] .remplissage { background: var(--pret); }
+
+.chiffres {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(78px, 1fr));
+  gap: 10px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+.chiffres div { display: grid; gap: 2px; align-content: end; }
+.chiffres dt, .chiffres .cle {
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faible);
+}
+
+/* --- encarts ------------------------------------------------------------ */
+
+.encart {
+  border: 1px solid var(--trait);
+  border-left-width: 3px;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--panneau);
+  font-size: 14px;
+  display: grid;
+  gap: 6px;
+}
+.encart .titre { font-weight: 600; color: var(--texte); }
+.encart[data-gravite="danger"]    { border-left-color: var(--refus); }
+.encart[data-gravite="attention"] { border-left-color: var(--ajuster); }
+.encart[data-gravite="info"]      { border-left-color: var(--faible); }
+.encart[data-gravite="bien"]      { border-left-color: var(--pret); }
+
+dl.fiche {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 16px;
+  font-size: 14px;
+  align-items: baseline;
+}
+dl.fiche dt { color: var(--faible); }
+dl.fiche dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+input[type="text"] {
+  font: inherit;
+  font-family: var(--mono);
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--trait);
+  background: var(--fond);
+  color: var(--texte);
+}
+
+label.champ { display: grid; gap: 6px; font-size: 13px; color: var(--faible); }
+
+.discretion {
+  font-size: 12.5px;
+  color: var(--faible);
+  border-top: 1px solid var(--trait);
+  padding-top: 14px;
+}
+.discretion code { font-family: var(--mono); color: var(--texte); }
+
+canvas.travail { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 0ms !important; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>OptiKey</h1>
+  <span class="sous" id="etat-decodeur">chargement…</span>
+</header>
+
+<main>
+
+  <!-- 1. amorçage absent ------------------------------------------------- -->
+  <section class="vue" id="vue-amorcage">
+    <div class="contenu">
+      <h2>Il manque l'amorçage</h2>
+      <p>Cette page a besoin de savoir <strong>comment la feuille est construite</strong> :
+         combien de tuiles, quelle finesse, quelle redondance. Ça ne se devine pas
+         depuis les pixels. C'est le QR Code imprimé sur la feuille qui le porte.</p>
+      <div class="encart" data-gravite="info">
+        <span class="titre">Scannez le QR de la feuille</span>
+        <span>Il ouvrira cette même page, avec la géométrie dans l'adresse.</span>
+      </div>
+      <label class="champ">
+        Ou collez ici l'adresse complète lue sur le QR
+        <input type="text" id="champ-url" inputmode="url" spellcheck="false"
+               placeholder="https://…/#v=1&amp;p=1&amp;tx=3…">
+      </label>
+      <div class="actions">
+        <button class="principal" id="btn-amorcer">Utiliser cette adresse</button>
+      </div>
+      <p id="erreur-amorcage" role="alert"></p>
+      <p class="discretion">La géométrie voyage <strong>après le dièse</strong>, dans le
+        fragment de l'adresse. Un fragment n'est jamais transmis au serveur : même
+        les caractéristiques de votre feuille restent sur cet appareil.</p>
+    </div>
+  </section>
+
+  <!-- 2. prêt à viser ----------------------------------------------------- -->
+  <section class="vue" id="vue-pret">
+    <div class="contenu">
+      <h2>Feuille reconnue</h2>
+      <dl class="fiche" id="fiche-page"></dl>
+      <div class="encart" data-gravite="info" id="encart-exigence">
+        <span class="titre">Ce que l'image devra porter</span>
+        <span id="texte-exigence"></span>
+      </div>
+      <div class="actions">
+        <button class="principal" id="btn-camera">Ouvrir la caméra</button>
+        <button id="btn-photo">Choisir une photo déjà prise</button>
+        <input type="file" id="entree-fichier" accept="image/*" hidden>
+      </div>
+      <p class="discretion">Cadrez <strong>le bloc de données</strong>, pas la feuille
+        entière : sur une A4 le bloc n'occupe qu'un tiers de la largeur, et photographier
+        toute la page gaspille les neuf dixièmes des pixels. L'appareil photo du téléphone
+        donne souvent plus de définition que l'aperçu vidéo — si le cadrage en direct n'y
+        arrive pas, prenez une photo et donnez-la ici.</p>
+    </div>
+  </section>
+
+  <!-- 3. visée ------------------------------------------------------------ -->
+  <section class="vue" id="vue-visee">
+    <div class="viseur" id="viseur" data-etat="perdu">
+      <video id="apercu" playsinline muted autoplay></video>
+      <div class="mire"></div>
+      <div class="verdict" id="verdict">Cadrez le bloc de données</div>
+    </div>
+    <div class="mesures">
+      <div class="jauge" id="jauge-finesse">
+        <div class="haut">
+          <span>Finesse</span>
+          <span class="valeur"><span id="val-finesse">—</span> px/cellule</span>
+        </div>
+        <div class="piste"><div class="remplissage" id="barre-finesse"></div>
+          <div class="seuil" id="marque-seuil"></div></div>
+      </div>
+      <div class="chiffres">
+        <div><span class="cle">Tuiles</span><span id="val-tuiles">—</span></div>
+        <div><span class="cle">Contraste</span><span id="val-contraste">—</span></div>
+        <div><span class="cle">Sûres</span><span id="val-sures">—</span></div>
+        <div><span class="cle">Cadence</span><span id="val-cadence">—</span></div>
+      </div>
+      <!-- GARDER LA PHOTO EST UN CHOIX, ET IL SE FAIT AVANT LA PRISE.
+           La photo est enregistree au moment de la capture, pas apres le
+           decodage : une lecture qui echoue ne doit pas emporter l'image avec
+           elle. C'est justement quand ca rate qu'on veut pouvoir reessayer,
+           ou l'envoyer a quelqu'un. -->
+      <label class="option" for="opt-garder">
+        <input type="checkbox" id="opt-garder">
+        <span>
+          <b>Enregistrer la photo</b>
+          <em>Gardee en PNG, sans perte : elle se relit exactement comme
+          l'originale. Enregistree meme si la lecture echoue.</em>
+        </span>
+      </label>
+      <div class="actions">
+        <button class="principal" id="btn-lire" disabled>Lire maintenant</button>
+        <button class="discret" id="btn-arreter">Arrêter la caméra</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. travail ---------------------------------------------------------- -->
+  <section class="vue" id="vue-travail">
+    <div class="contenu">
+      <h2 id="titre-travail">Lecture en cours…</h2>
+      <p id="detail-travail"></p>
+    </div>
+  </section>
+
+  <!-- 5. résultat --------------------------------------------------------- -->
+  <section class="vue" id="vue-resultat">
+    <div class="contenu">
+      <h2 id="titre-resultat">Fichier récupéré</h2>
+      <dl class="fiche" id="fiche-resultat"></dl>
+      <div id="avertissements"></div>
+      <label class="champ">
+        Nom du fichier à enregistrer
+        <input type="text" id="champ-nom" spellcheck="false">
+      </label>
+      <div class="actions">
+        <a class="bouton principal" id="lien-telecharger" download>Enregistrer le fichier</a>
+        <button id="btn-recommencer">Lire une autre feuille</button>
+      </div>
+      <p class="discretion">Ce décodeur <strong>n'ouvre ni n'exécute jamais</strong> ce
+        qu'il récupère. Le fichier vous est remis en octets bruts ; c'est vous qui
+        décidez de l'ouvrir, et avec quoi.</p>
+    </div>
+  </section>
+
+  <!-- 6. échec ------------------------------------------------------------ -->
+  <section class="vue" id="vue-echec">
+    <div class="contenu">
+      <h2>Lecture impossible</h2>
+      <div class="encart" data-gravite="attention" id="encart-echec">
+        <span class="titre" id="titre-echec"></span>
+        <span id="detail-echec"></span>
+      </div>
+      <div class="actions">
+        <button class="principal" id="btn-reessayer">Réessayer</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<canvas class="travail" id="toile"></canvas>
+<script type="module" src="./decodeur.js"></script>
+</body>
+</html>
