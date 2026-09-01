@@ -143,6 +143,11 @@ let bonnesDeSuite = 0;
 /// Finesse visee pour la page courante. Recalculee des que le descripteur est
 /// connu, car elle depend du nombre de niveaux de gris qu'il annonce.
 let vise = SEUIL;
+/// Derniere prise de vue, en PNG. Gardee pour pouvoir la proposer apres un
+/// echec de lecture — voir `lire`.
+let dernierePrise = null;
+/// Evenement d'installation mis de cote par le navigateur, quand il l'offre.
+let inviteInstallation = null;
 
 /// Geometrie gravee dans ce fichier, s'il en porte une.
 ///
@@ -434,8 +439,14 @@ async function lire() {
   // Une lecture qui echoue ne doit pas emporter l'image avec elle : c'est
   // justement quand ca rate qu'on veut pouvoir reessayer, ou l'envoyer a
   // quelqu'un. L'ordre compte donc, et il n'est pas neutre.
-  if ($('opt-garder')?.checked) {
-    await enregistrerPhoto(video, largeur, hauteur);
+  // LA PRISE DE VUE EST TOUJOURS GARDEE EN MEMOIRE, MEME SANS L'OPTION.
+  //
+  // L'option decide de l'ENREGISTREMENT immediat ; la garder sous la main coute
+  // quelques megaoctets et permet de la proposer apres coup si la lecture
+  // echoue. C'est justement dans ce cas qu'on la veut.
+  dernierePrise = await versPng(video, largeur, hauteur);
+  if ($('opt-garder')?.checked && dernierePrise) {
+    telecharger(dernierePrise);
   }
   arreterCamera();
   await decoder(gris, largeur, hauteur);
@@ -456,13 +467,30 @@ async function lire() {
 /// Le PNG est sans perte : l'image enregistree se decode exactement comme
 /// celle qui vient d'etre lue.
 async function enregistrerPhoto(video, largeur, hauteur) {
+  const blob = await versPng(video, largeur, hauteur);
+  if (blob) telecharger(blob);
+}
+
+/// Transforme une source dessinable en PNG, ou rend `null` sans rien casser.
+async function versPng(source, largeur, hauteur) {
   try {
     const toile = document.createElement('canvas');
     toile.width = largeur;
     toile.height = hauteur;
-    toile.getContext('2d').drawImage(video, 0, 0, largeur, hauteur);
+    toile.getContext('2d').drawImage(source, 0, 0, largeur, hauteur);
     const blob = await new Promise((r) => toile.toBlob(r, 'image/png'));
     if (!blob) throw new Error('image vide');
+    return blob;
+  } catch (e) {
+    // Une photo non enregistree ne doit JAMAIS empecher la lecture : c'est un
+    // service rendu en plus, pas une etape de la chaine.
+    console.warn('OptiKey : photo non preparee —', e.message);
+    return null;
+  }
+}
+
+function telecharger(blob) {
+  try {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     const t = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -475,8 +503,6 @@ async function enregistrerPhoto(video, largeur, hauteur) {
     // telechargement sur certains navigateurs, qui lisent l'URL apres le clic.
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
   } catch (e) {
-    // Une photo non enregistree ne doit JAMAIS empecher la lecture : c'est un
-    // service rendu en plus, pas une etape de la chaine.
     console.warn('OptiKey : photo non enregistree —', e.message);
   }
 }
@@ -540,10 +566,39 @@ function diagnostiquer(e, mesure) {
       + 'netteté qui manque ici, ce sont les pixels.');
     return;
   }
-  echouer('Données irrécupérables',
-    `La finesse suffisait pourtant (${mesure.pxParCellule.toFixed(2)} px par cellule, `
-    + `${(mesure.cellulesSures * 100).toFixed(0)} % de cellules sûres). Le bloc est `
-    + `probablement abîmé, plié, ou masqué par un reflet. — ${e.message}`);
+  // ASSEZ DE PIXELS, ET POURTANT ILLISIBLE : DEUX MONDES DIFFERENTS.
+  //
+  // Le message ne parlait que de papier — abime, plie, reflet. Photographier un
+  // ECRAN echoue pour de tout autres raisons, et ce sont les plus frequentes
+  // pendant la mise au point :
+  //
+  //   - la mise a l'echelle de Windows (125 % le plus souvent) et le zoom du
+  //     navigateur etirent l'image d'un facteur NON ENTIER : une cellule de
+  //     deux pixels devient deux pixels et demi, et les cellules ne recoivent
+  //     plus le meme nombre de pixels chacune ;
+  //   - le moire entre la grille de l'ecran et celle du capteur ;
+  //   - un ecran qui lisse l'image au lieu de l'afficher point pour point.
+  //
+  // Aucun de ces trois n'est visible a l'œil : l'image parait nette, et la
+  // finesse mesuree est bonne. D'ou un message qui envoyait chercher un pli
+  // inexistant.
+  const sures = (mesure.cellulesSures * 100).toFixed(0);
+  // Apostrophes typographiques et guillemets doubles : aucune sequence
+  // d'echappement dans un texte qui en contient a chaque ligne.
+  const paragraphes = [
+    `La finesse suffisait (${mesure.pxParCellule.toFixed(2)} px par cellule, `
+      + `${sures} % de cellules sûres) : le problème n’est pas la définition.`,
+    "SI VOUS PHOTOGRAPHIEZ UN ÉCRAN — c’est la cause la plus fréquente pendant "
+      + "la mise au point. Mettez le zoom du navigateur à 100 % (Ctrl+0) et "
+      + "affichez l’image en taille réelle. Si votre système agrandit tout "
+      + "(125 % sous Windows), demandez une image dessinée plus gros : étirée "
+      + "d’un facteur non entier, une cellule ne reçoit plus le même nombre de "
+      + "pixels partout — et cela ne se voit pas à l’œil.",
+    "SI VOUS PHOTOGRAPHIEZ DU PAPIER — le bloc est probablement plié, abîmé, "
+      + "ou masqué par un reflet.",
+    `— ${e.message}`,
+  ];
+  echouer("Données irrécupérables", paragraphes.join("\n\n"));
 }
 
 /// Met en mots deux chiffres qui ne mesurent pas la meme chose.
@@ -663,8 +718,75 @@ function echouer(titre, detail) {
   arreterCamera();
   texte($('titre-echec'), titre);
   texte($('detail-echec'), detail);
+  // La photo n'est proposee que s'il y en a une : un fichier choisi dans la
+  // galerie est deja sur l'appareil, l'enregistrer une seconde fois n'aurait
+  // aucun sens.
+  const b = $('btn-garder-echec');
+  if (b) b.hidden = !dernierePrise;
   montrer('vue-echec');
 }
+
+// --- installation ----------------------------------------------------------
+//
+// DEUX PLATEFORMES, DEUX MECANIQUES, ET UNE SEULE QUI PREVIENT.
+//
+// Android annonce l'installation possible par un evenement, que l'on met de
+// cote pour le declencher sur un vrai bouton. iOS n'annonce rien du tout : le
+// geste existe — Partager, puis « Sur l'ecran d'accueil » — mais rien dans la
+// page ne permet de le provoquer ni meme de savoir s'il est disponible. On s'y
+// resout a l'ecrire, ce qui est la seule chose honnete a faire.
+
+/// Vrai si la page tourne deja comme une application installee.
+function dejaInstallee() {
+  return window.matchMedia('(display-mode: standalone)').matches
+    || window.navigator.standalone === true;
+}
+
+function estApple() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent)
+    // Un iPad recent se declare « Macintosh » : le tactile le trahit.
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function reglerBandeauInstallation() {
+  const bandeau = $('bandeau-installer');
+  if (!bandeau) return;
+  if (dejaInstallee() || sessionStorage.getItem('optikey-installer-plus-tard')) {
+    bandeau.hidden = true;
+    return;
+  }
+  if (inviteInstallation) {
+    texte($('installer-titre'), "Installer OptiKey sur cet appareil");
+    texte($('installer-detail'),
+      "Une icône sur l’écran d’accueil, et plus aucun besoin de réseau.");
+    $('btn-installer').hidden = false;
+    bandeau.hidden = false;
+    return;
+  }
+  if (estApple()) {
+    // Aucun bouton : rien ne permet de declencher le geste depuis la page.
+    texte($('installer-titre'), "Ajouter OptiKey à l’écran d’accueil");
+    texte($('installer-detail'),
+      "Bouton Partager, puis « Sur l’écran d’accueil ». Ensuite l’application "
+      + "fonctionne sans aucun réseau.");
+    $('btn-installer').hidden = true;
+    bandeau.hidden = false;
+  }
+}
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  // Sans cela, le navigateur affiche sa propre invite, au moment qui lui
+  // convient. On la garde pour la declencher sur un bouton explicite.
+  e.preventDefault();
+  inviteInstallation = e;
+  reglerBandeauInstallation();
+});
+
+window.addEventListener('appinstalled', () => {
+  inviteInstallation = null;
+  const b = $('bandeau-installer');
+  if (b) b.hidden = true;
+});
 
 // --- branchements ----------------------------------------------------------
 
@@ -700,6 +822,25 @@ if ('serviceWorker' in navigator) {
     });
   });
 }
+
+$('btn-installer').onclick = async () => {
+  if (!inviteInstallation) return;
+  inviteInstallation.prompt();
+  await inviteInstallation.userChoice;
+  // L'invite ne se rejoue pas : le navigateur n'en emet qu'une par visite.
+  inviteInstallation = null;
+  $('bandeau-installer').hidden = true;
+};
+$('btn-installer-plus-tard').onclick = () => {
+  // Le refus vaut pour cette visite seulement, pas pour toujours : une
+  // preference definitive se regretterait le jour ou l'on veut installer.
+  sessionStorage.setItem('optikey-installer-plus-tard', '1');
+  $('bandeau-installer').hidden = true;
+};
+$('btn-garder-echec').onclick = () => {
+  if (dernierePrise) telecharger(dernierePrise);
+};
+reglerBandeauInstallation();
 
 $('btn-recommencer').onclick = () => { bonnesDeSuite = 0; montrer('vue-pret'); };
 $('btn-reessayer').onclick = () => { bonnesDeSuite = 0; montrer(page ? 'vue-pret' : 'vue-amorcage'); };

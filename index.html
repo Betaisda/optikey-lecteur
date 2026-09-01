@@ -111,6 +111,23 @@ p strong { color: var(--texte); font-weight: 500; }
 
 .actions { display: flex; flex-direction: column; gap: 10px; }
 
+/* Bandeau d'installation : present sans etre envahissant, il occupe la largeur
+   sous l'en-tete et s'efface des que l'application est installee. */
+#bandeau-installer {
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px; margin: 0 0 4px;
+  background: var(--panneau-haut); border-bottom: 1px solid var(--trait);
+}
+#bandeau-installer[hidden] { display: none; }
+#bandeau-installer .texte { flex: 1 1 260px; }
+#bandeau-installer b { display: block; font-weight: 500; }
+#bandeau-installer em { display: block; font-style: normal; color: var(--faible); font-size: 13px; margin-top: 3px; }
+#bandeau-installer .boutons { display: flex; gap: 8px; flex: 0 0 auto; }
+#bandeau-installer button { padding: 10px 16px; }
+
+#detail-echec { white-space: pre-line; }
+
 /* Une option a cocher, lisible d'un coup d'œil pendant qu'on vise. */
 .option {
   display: flex; gap: 12px; align-items: flex-start;
@@ -342,6 +359,21 @@ canvas.travail { display: none; }
   <span class="sous" id="etat-decodeur">chargement…</span>
 </header>
 
+<!-- INSTALLER : LE SEUL GESTE QUI REND L'APPLICATION HORS LIGNE.
+     Tant qu'elle est ouverte comme une page, elle depend du reseau pour se
+     charger. Installee, elle n'en depend plus jamais. Ce bandeau disparait de
+     lui-meme une fois l'installation faite. -->
+<div id="bandeau-installer" hidden>
+  <div class="texte">
+    <b id="installer-titre">Installer OptiKey sur cet appareil</b>
+    <em id="installer-detail">Une icone sur l'ecran d'accueil, et plus aucun besoin de reseau.</em>
+  </div>
+  <div class="boutons">
+    <button class="principal" id="btn-installer">Installer</button>
+    <button class="discret" id="btn-installer-plus-tard">Plus tard</button>
+  </div>
+</div>
+
 <main>
 
   <!-- 1. amorçage absent ------------------------------------------------- -->
@@ -472,6 +504,10 @@ canvas.travail { display: none; }
       </div>
       <div class="actions">
         <button class="principal" id="btn-reessayer">Réessayer</button>
+        <!-- LA PHOTO SURVIT A L'ECHEC.
+             C'est precisement quand la lecture rate qu'on veut garder l'image :
+             pour reessayer autrement, ou pour l'envoyer a quelqu'un. -->
+        <button class="discret" id="btn-garder-echec" hidden>Enregistrer la photo</button>
       </div>
     </div>
   </section>
