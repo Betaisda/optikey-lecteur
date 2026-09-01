@@ -105,6 +105,19 @@ const PATIENCE_MS = 2500;
 /// cellules sûres. Le banc montre que deux ou trois vues suffisent quand elles
 /// peuvent suffire ; au-delà de quatre, une de plus n'apporte plus rien.
 const VUES_MAX = 4;
+/// Écart de distance exigé entre deux vues cumulées, en fraction.
+///
+/// SANS LUI, LE CUMUL NE CUMULAIT RIEN.
+/// -------------------------------------
+/// Le guidage se redéclenche dès que l'image redevient stable. Après un échec,
+/// il reprenait donc une vue quasi identique à la précédente — même distance,
+/// même moiré, mêmes cellules fausses — et quatre vues valaient exactement une.
+/// Le banc le dit sans détour : empiler des copies n'apporte rien.
+///
+/// Le cumul ne paie que si la grille de pixels retombe AILLEURS sur les
+/// cellules, ce qui demande de changer de distance. Huit pour cent suffisent :
+/// à six pixels par cellule, cela déplace l'échantillonnage d'un demi-pixel.
+const ECART_VUES = 0.08;
 /// Au-dela, l'analyse du guidage travaille sur une image reduite. Le resultat
 /// est remis a l'echelle : la finesse est proportionnelle a la resolution.
 const PIXELS_ANALYSE_MAX = 2_500_000;
@@ -177,6 +190,9 @@ let vueCourante = { k: 1, largeur: 0, hauteur: 0 };
 /// deux feuilles differentes ne produirait pas une lecture partielle, mais du
 /// bruit presente comme une lecture.
 let vuesPage = [];
+/// Finesse à laquelle la dernière vue cumulée a été prise. Sert à exiger un
+/// vrai déplacement avant d'en accepter une autre.
+let pxDerniereVue = 0;
 /// Finesse visee pour la page courante. Recalculee des que le descripteur est
 /// connu, car elle depend du nombre de niveaux de gris qu'il annonce.
 let vise = SEUIL;
@@ -242,6 +258,7 @@ async function demarrer() {
 function amorcerSansQr() {
   page = null;
   vuesPage = [];
+  pxDerniereVue = 0;
   vise = seuilVise(2);
   fiche($('fiche-page'), []);
   texte($('texte-exigence'),
@@ -654,6 +671,27 @@ function afficherMesure(m, ms) {
     }
     if (!debutBonCadrage) debutBonCadrage = t;
 
+    // UNE VUE DE PLUS N'EN EST UNE QUE SI ELLE EST DIFFERENTE.
+    //
+    // Après un échec, le guidage se redéclenchait dès que l'image redevenait
+    // stable — c'est-à-dire aussitôt, si la personne n'a pas bougé. Les quatre
+    // vues cumulées étaient alors quatre copies de la même, et le cumul ne
+    // cumulait rien : le banc mesure explicitement qu'empiler des copies
+    // n'apporte aucune information.
+    //
+    // On exige donc un vrai déplacement avant d'en accepter une autre. C'est
+    // exactement ce que demande l'enregistrement d'une empreinte digitale, et
+    // pour la même raison.
+    if (pxDerniereVue > 0
+        && Math.abs(m.pxParCellule - pxDerniereVue) / pxDerniereVue < ECART_VUES) {
+      viseur.dataset.etat = 'ajuster';
+      bonnesDeSuite = 0;
+      texte($('verdict'),
+        `Vue ${vuesPage.length} sur ${VUES_MAX} — approchez ou reculez un peu, `
+        + 'sinon la vue suivante serait la même');
+      return;
+    }
+
     const repos = t - derniereAmelioration;
     const attente = t - debutBonCadrage;
     if (repos < REPOS_MS && attente < PATIENCE_MS) {
@@ -704,7 +742,7 @@ let lectureEnCours = false;
 /// Elle doit rester EGALE au nom de cache du service worker : sans quoi on
 /// afficherait une version tout en servant les fichiers d'une autre.
 /// `tools/deploiement.py` refuse de livrer si les deux divergent.
-const VERSION = 'v12';
+const VERSION = 'v13';
 
 async function lire() {
   if (lectureEnCours) return;
@@ -950,6 +988,7 @@ async function decoder(source, largeur, hauteur, { garderCamera = false } = {}) 
     return 'perdu';
   }
   vuesPage.push(lu.vue);
+  if (mesure) pxDerniereVue = mesure.pxParCellule;
 
   let sortie = null;
   try {
@@ -1287,8 +1326,8 @@ $('btn-garder-echec').onclick = () => {
 };
 reglerBandeauInstallation();
 
-$('btn-recommencer').onclick = () => { bonnesDeSuite = 0; vuesPage = []; montrer('vue-pret'); };
-$('btn-reessayer').onclick = () => { bonnesDeSuite = 0; vuesPage = []; montrer('vue-pret'); };
+$('btn-recommencer').onclick = () => { bonnesDeSuite = 0; vuesPage = []; pxDerniereVue = 0; montrer('vue-pret'); };
+$('btn-reessayer').onclick = () => { bonnesDeSuite = 0; vuesPage = []; pxDerniereVue = 0; montrer('vue-pret'); };
 
 window.addEventListener('hashchange', () => amorcer(location.hash));
 window.addEventListener('pagehide', arreterCamera);
