@@ -105,6 +105,13 @@ const PATIENCE_MS = 2500;
 /// cellules sûres. Le banc montre que deux ou trois vues suffisent quand elles
 /// peuvent suffire ; au-delà de quatre, une de plus n'apporte plus rien.
 const VUES_MAX = 4;
+/// Fraction du cadre qu'une tuile doit occuper pour qu'on la lise seule.
+///
+/// C'est tout le geste du mode case par case : remplir le cadre d'UNE case. A
+/// cinquante pour cent du plus petit cote, une tuile de cent trente-quatre
+/// cellules recoit deja plus de dix pixels par cellule sur un capteur ordinaire
+/// — trois fois ce que donne la page entiere.
+const PART_TUILE = 0.5;
 /// Écart de distance exigé entre deux vues cumulées, en fraction.
 ///
 /// SANS LUI, LE CUMUL NE CUMULAIT RIEN.
@@ -190,6 +197,11 @@ let vueCourante = { k: 1, largeur: 0, hauteur: 0 };
 /// deux feuilles differentes ne produirait pas une lecture partielle, mais du
 /// bruit presente comme une lecture.
 let vuesPage = [];
+/// Mode « case par case » : on lit une tuile a la fois, de pres.
+let modeTuile = false;
+/// Rangs des tuiles deja lues. Une tuile relue ne coute rien — le vote la
+/// confirme — mais l'afficher evite de tourner en rond.
+let tuilesLues = new Set();
 /// Finesse à laquelle la dernière vue cumulée a été prise. Sert à exiger un
 /// vrai déplacement avant d'en accepter une autre.
 let pxDerniereVue = 0;
@@ -259,6 +271,8 @@ function amorcerSansQr() {
   page = null;
   vuesPage = [];
   pxDerniereVue = 0;
+  modeTuile = false;
+  tuilesLues = new Set();
   vise = seuilVise(2);
   fiche($('fiche-page'), []);
   texte($('texte-exigence'),
@@ -457,6 +471,31 @@ function echelleAnalyse(largeur, hauteur) {
   return Math.sqrt(PIXELS_ANALYSE_MAX / pixels);
 }
 
+/// Où se trouve la tuile de rang `t`, en toutes lettres.
+///
+/// On ne demande jamais « approchez-vous de la case 3 » : personne ne sait où
+/// est la troisième. On nomme la position, et l'ordre n'a aucune importance
+/// puisque chaque tuile dit elle-même laquelle elle est.
+function ouEstLaTuile(t, tx, ty) {
+  if (tx === 1 && ty === 1) return 'la case';
+  const col = t % tx;
+  const lig = Math.floor(t / tx);
+  const h = tx === 1 ? '' : col === 0 ? 'à gauche' : col === tx - 1 ? 'à droite' : 'au milieu';
+  const v = ty === 1 ? '' : lig === 0 ? 'en haut' : lig === ty - 1 ? 'en bas' : 'au centre';
+  return [v, h].filter(Boolean).join(' ') || 'la case';
+}
+
+/// Les tuiles qu'il reste à photographier, nommées par leur position.
+function tuilesManquantes() {
+  if (!page) return [];
+  const total = page.tuilesX * page.tuilesY;
+  const reste = [];
+  for (let t = 0; t < total; t++) {
+    if (!tuilesLues.has(t)) reste.push(ouEstLaTuile(t, page.tuilesX, page.tuilesY));
+  }
+  return reste;
+}
+
 function lancerGuidage(video) {
   let dernierTemps = 0;
   const tour = () => {
@@ -466,6 +505,45 @@ function lancerGuidage(video) {
       const t0 = performance.now();
       const k = echelleAnalyse(lv, lh);
       const w = Math.round(lv * k), h = Math.round(lh * k);
+
+      // MODE CASE PAR CASE : on ne cherche plus la page, mais UNE tuile.
+      //
+      // La page entière dans le champ, c'est le capteur qui décide : ses pixels
+      // se partagent entre les tuiles. Neuf tuiles donnent trois fois moins de
+      // pixels par cellule qu'une seule — mesuré sur téléphone : 4,94 px par
+      // cellule là où il en faut six.
+      //
+      // En s'approchant case par case, chaque gros plan retrouve la finesse
+      // d'une page d'une seule tuile. On attend simplement qu'une tuile
+      // remplisse le cadre, et l'en-tête dit laquelle c'est.
+      if (modeTuile) {
+        const gris = versGris(video, w, h);
+        let taches = [];
+        try { taches = pdc.ouvertures(gris, w, h); } catch { taches = []; }
+        const grande = taches
+          .map((q) => Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]))
+          .reduce((a, b) => Math.max(a, b), 0);
+        const part = grande / Math.min(w, h);
+        dessinerSuivi(taches, k, lv, lh, part >= PART_TUILE);
+        dernierTemps = performance.now() - t0;
+        const reste = tuilesManquantes();
+        if (part >= PART_TUILE) {
+          $('viseur').dataset.etat = 'pret';
+          texte($('verdict'), 'Ne bougez plus');
+          bonnesDeSuite++;
+          if (bonnesDeSuite >= 2) lireUneTuile();
+        } else {
+          bonnesDeSuite = 0;
+          $('viseur').dataset.etat = taches.length ? 'ajuster' : 'perdu';
+          texte($('verdict'), taches.length
+            ? `Approchez : une seule case doit remplir le cadre — reste ${reste.length} `
+              + `(${reste.slice(0, 3).join(', ')}${reste.length > 3 ? '…' : ''})`
+            : `Cadrez une case — il en reste ${reste.length}`);
+        }
+        boucle = setTimeout(tour, Math.max(80, dernierTemps));
+        return;
+      }
+
       if (!page) {
         // CHERCHER L'EN-TETE SE FAIT A PLEINE DEFINITION, ET C'EST OBLIGATOIRE.
         //
@@ -742,7 +820,7 @@ let lectureEnCours = false;
 /// Elle doit rester EGALE au nom de cache du service worker : sans quoi on
 /// afficherait une version tout en servant les fichiers d'une autre.
 /// `tools/deploiement.py` refuse de livrer si les deux divergent.
-const VERSION = 'v14';
+const VERSION = 'v15';
 
 async function lire() {
   if (lectureEnCours) return;
@@ -752,6 +830,72 @@ async function lire() {
   } finally {
     lectureEnCours = false;
   }
+}
+
+/// Photographie UNE case, l'ajoute aux vues, et tente le décodage.
+///
+/// La caméra ne s'arrête pas : tant qu'il manque des cases, on continue. C'est
+/// l'enregistrement d'empreinte, appliqué à une page — sauf qu'ici l'ordre n'a
+/// aucune importance, puisque chaque case dit laquelle elle est.
+async function lireUneTuile() {
+  if (lectureEnCours) return;
+  lectureEnCours = true;
+  try {
+    const video = $('apercu');
+    const largeur = video.videoWidth;
+    const hauteur = video.videoHeight;
+    if (!largeur || !hauteur) return;
+    const brut = versGris(video, largeur, hauteur);
+    texte($('verdict'), 'Lecture de la case…');
+    await respirer();
+
+    let lu = null;
+    try {
+      lu = pdc.demodulerTuile(brut, largeur, hauteur, 1);
+    } catch { lu = null; }
+    if (!lu) {
+      bonnesDeSuite = 0;
+      texte($('verdict'), 'Case non reconnue — approchez, ou changez d’angle');
+      return;
+    }
+    // La géométrie vient de la case elle-même : la première lue renseigne la
+    // page, les suivantes la confirment.
+    if (!page) { page = lu.page; decrirePage(); }
+    const deja = tuilesLues.has(lu.tuile);
+    tuilesLues.add(lu.tuile);
+    vuesPage.push(lu.vue);
+
+    let sortie = null;
+    try {
+      sortie = pdc.fusionnerEtDecoder(vuesPage, lu.symboles, page.profil);
+    } catch { sortie = null; }
+    if (sortie) {
+      arreterCamera();
+      presenterResultat(sortie, null);
+      return;
+    }
+    const reste = tuilesManquantes();
+    bonnesDeSuite = 0;
+    oublierMiseAuPoint();
+    texte($('verdict'), reste.length
+      ? `${deja ? 'Case déjà lue' : 'Case lue'} — il en reste ${reste.length} : `
+        + reste.slice(0, 3).join(', ') + (reste.length > 3 ? '…' : '')
+      : 'Toutes les cases lues, mais il manque encore des données — reprenez-en une');
+  } finally {
+    lectureEnCours = false;
+  }
+}
+
+/// Entre dans le mode case par case.
+function passerEnModeTuile() {
+  modeTuile = true;
+  tuilesLues = new Set();
+  vuesPage = [];
+  bonnesDeSuite = 0;
+  oublierMiseAuPoint();
+  montrer('vue-visee');
+  if (!flux) { ouvrirCamera(); return; }
+  if (!boucle) lancerGuidage($('apercu'));
 }
 
 async function lireVraiment() {
@@ -1210,6 +1354,10 @@ function echouer(titre, detail) {
   // aucun sens.
   const b = $('btn-garder-echec');
   if (b) b.hidden = !dernierePrise;
+  // La lecture case par case n'a de sens que sur une page qui en a plusieurs,
+  // et seulement une fois qu'on sait combien.
+  const c = $('btn-tuiles');
+  if (c) c.hidden = !(page && page.tuilesX * page.tuilesY > 1);
   montrer('vue-echec');
 }
 
@@ -1306,6 +1454,7 @@ if ('serviceWorker' in navigator) {
 
 texte($('version-appli'), VERSION);
 $('btn-scanner-document').onclick = amorcerSansQr;
+$('btn-tuiles').onclick = passerEnModeTuile;
 
 $('btn-installer').onclick = async () => {
   if (!inviteInstallation) return;
@@ -1326,8 +1475,8 @@ $('btn-garder-echec').onclick = () => {
 };
 reglerBandeauInstallation();
 
-$('btn-recommencer').onclick = () => { bonnesDeSuite = 0; vuesPage = []; pxDerniereVue = 0; montrer('vue-pret'); };
-$('btn-reessayer').onclick = () => { bonnesDeSuite = 0; vuesPage = []; pxDerniereVue = 0; montrer('vue-pret'); };
+$('btn-recommencer').onclick = () => { bonnesDeSuite = 0; vuesPage = []; pxDerniereVue = 0; modeTuile = false; tuilesLues = new Set(); montrer('vue-pret'); };
+$('btn-reessayer').onclick = () => { bonnesDeSuite = 0; vuesPage = []; pxDerniereVue = 0; modeTuile = false; tuilesLues = new Set(); montrer('vue-pret'); };
 
 window.addEventListener('hashchange', () => amorcer(location.hash));
 window.addEventListener('pagehide', arreterCamera);

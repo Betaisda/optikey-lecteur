@@ -272,6 +272,48 @@ export class Pdc {
     }
   }
 
+  /** Demodule UNE TUILE photographiee seule, de pres.
+   *
+   *  Toute la page devait tenir dans le champ, donc le capteur partageait ses
+   *  pixels entre les tuiles : neuf tuiles donnent trois fois moins de pixels
+   *  par cellule qu'une seule. Chaque tuile portant desormais son rang dans
+   *  l'en-tete, elle se lit seule — et le resultat a le format d'une vue de
+   *  page ENTIERE, donc `fusionnerEtDecoder` le recolle aux autres.
+   *
+   *  Rend `null` quand aucune tuile ne se decrit. */
+  demodulerTuile(pixels, largeur, hauteur, canaux = 1) {
+    const ptr = this.x.pdc_alloc(pixels.length);
+    try {
+      this.memoire.set(pixels, ptr);
+      const res = this.x.pdc_demoduler_tuile(ptr, largeur, hauteur, canaux);
+      if (this.x.pdc_result_status(res) !== 0) {
+        this.x.pdc_result_free(res);
+        return null;
+      }
+      const { octets, info } = this.#lire(res);
+      const niveaux = info[5];
+      return {
+        vue: octets,
+        symboles: info[0],
+        douteux: info[1],
+        tuile: info[2],
+        page: {
+          profil: PROFIL_PAR_NUMERO[info[6]],
+          tuilesX: info[3],
+          tuilesY: info[4],
+          niveaux,
+          bitsParCellule: Math.log2(niveaux),
+          symboles: info[0],
+          couleur: info[7] !== 0,
+          entete: true,
+          origine: 'tuile',
+        },
+      };
+    } finally {
+      this.x.pdc_dealloc(ptr, pixels.length);
+    }
+  }
+
   /** Cumule plusieurs vues de la MEME page et decode le resultat.
    *
    *  `vues` est un tableau de ce que rend `demoduler`. Le vote est fait dans

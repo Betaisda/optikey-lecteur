@@ -518,6 +518,13 @@ canvas.travail { display: none; }
       </div>
       <div class="actions">
         <button class="principal" id="btn-reessayer">Réessayer</button>
+        <!-- LIRE CASE PAR CASE.
+             La page entière dans le champ, c'est le capteur qui décide : ses
+             pixels se partagent entre les cases. En s'approchant de chacune,
+             chaque gros plan retrouve la finesse d'une page d'une seule case —
+             trois fois plus de pixels par cellule sur une page de neuf. Chaque
+             case porte son rang, donc l'ordre n'a aucune importance. -->
+        <button id="btn-tuiles" hidden>Lire case par case</button>
         <!-- LA PHOTO SURVIT A L'ECHEC.
              C'est precisement quand la lecture rate qu'on veut garder l'image :
              pour reessayer autrement, ou pour l'envoyer a quelqu'un. -->
